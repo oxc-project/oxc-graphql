@@ -95,6 +95,10 @@ pub struct Parser<'input> {
     recursion_limit: LimitTracker,
     /// Accept parsing errors?
     accept_errors: bool,
+    /// Allow descriptions on executable definitions (operation / fragment /
+    /// variable definitions). Off by default. Enables the 2025 draft-spec
+    /// syntax that graphql-js 16 accepts.
+    allow_executable_descriptions: bool,
 }
 
 /// A pending token to be added to the CST - either ignored (whitespace/comment/comma) or an error.
@@ -131,6 +135,7 @@ impl<'input> Parser<'input> {
             errors: Vec::new(),
             recursion_limit: LimitTracker::new(DEFAULT_RECURSION_LIMIT),
             accept_errors: true,
+            allow_executable_descriptions: false,
         }
     }
 
@@ -138,6 +143,19 @@ impl<'input> Parser<'input> {
     pub fn recursion_limit(mut self, recursion_limit: usize) -> Self {
         self.recursion_limit = LimitTracker::new(recursion_limit);
         self
+    }
+
+    /// Allow descriptions on executable definitions (operation / fragment /
+    /// variable definitions). Off by default. When enabled, parses the 2025
+    /// draft-spec syntax accepted by graphql-js 16; otherwise a leading
+    /// description is an error as in October 2021.
+    pub fn allow_executable_descriptions(mut self, allow: bool) -> Self {
+        self.allow_executable_descriptions = allow;
+        self
+    }
+
+    pub(crate) fn executable_descriptions_allowed(&self) -> bool {
+        self.allow_executable_descriptions
     }
 
     /// Configure the limit on the number of tokens to parse. If an input document

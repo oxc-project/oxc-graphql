@@ -1,3 +1,4 @@
+use crate::parser::grammar::description;
 use crate::parser::grammar::directive;
 use crate::parser::grammar::name;
 use crate::parser::grammar::selection;
@@ -9,12 +10,23 @@ use crate::TokenKind;
 use crate::S;
 use crate::T;
 
-/// See: https://spec.graphql.org/October2021/#FragmentDefinition
+/// See: https://spec.graphql.org/draft/#FragmentDefinition
 ///
 /// *FragmentDefinition*:
-///     **fragment** FragmentName TypeCondition Directives? SelectionSet
+///     Description? **fragment** FragmentName TypeCondition Directives? SelectionSet
+///
+/// The leading *Description* is only parsed when
+/// [`Parser::allow_executable_descriptions`] is enabled (2025 draft spec,
+/// accepted by graphql-js 16).
 pub(crate) fn fragment_definition(p: &mut Parser) {
     let _g = p.start_node(SyntaxKind::FRAGMENT_DEFINITION);
+
+    if p.executable_descriptions_allowed() {
+        if let Some(TokenKind::StringValue) = p.peek() {
+            description::description(p);
+        }
+    }
+
     p.bump(SyntaxKind::fragment_KW);
 
     fragment_name(p);
@@ -109,5 +121,26 @@ pub(crate) fn fragment_spread(p: &mut Parser) {
 
     if let Some(T![@]) = p.peek() {
         directive::directives(p, Constness::NotConst);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::cst;
+    use crate::Parser;
+
+    #[test]
+    fn it_parses_fragment_description_when_enabled() {
+        let input = "\"Fragment description\"\nfragment ProfilePic on User { id }";
+        let cst = Parser::new(input)
+            .allow_executable_descriptions(true)
+            .parse();
+
+        assert_eq!(cst.errors().len(), 0);
+        let def = cst.document().definitions().next().unwrap();
+        let cst::Definition::FragmentDefinition(frag) = def else {
+            panic!("expected a FragmentDefinition");
+        };
+        assert!(frag.description().is_some());
     }
 }
