@@ -23,6 +23,8 @@ todo = "warn"
 unimplemented = "warn"
 print_stdout = "warn" # Must be opt-in
 print_stderr = "warn" # Must be opt-in
+disallowed_methods = "warn"
+disallowed_types = "warn"
 allow_attributes = "warn"
 # I like the explicitness of this rule as it removes confusion around `clone`.
 # This increases readability, avoids `clone` mindlessly and heap allocating by accident.
