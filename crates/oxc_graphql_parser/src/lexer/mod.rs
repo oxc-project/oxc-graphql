@@ -564,7 +564,7 @@ impl<'a> Cursor<'a> {
             | State::ExponentDigit
             | State::Whitespace
             | State::Comment => {
-                if let Some(mut err) = self.err() {
+                if let Some(mut err) = self.err.take() {
                     err.set_data(self.current_str().to_string());
                     return Err(err);
                 }
@@ -583,10 +583,9 @@ impl<'a> Cursor<'a> {
     }
 
     fn done(&mut self, token: Token<'a>) -> Result<Token<'a>, Error> {
-        if let Some(mut err) = self.err() {
+        if let Some(mut err) = self.err.take() {
             err.set_data(token.data.to_string());
             err.index = token.index;
-            self.err = None;
             return Err(err);
         }
         Ok(token)
