@@ -70,8 +70,6 @@ If no error is emitted, we can be sure that the input is lexically correct!
 ### Parser
 The next step in our parsing pipeline is the parser. The parser’s job is to take the tokens produced by the lexer and create nodes with information and relationships that in the end make up a syntax tree. Much like with the lexer, the parser is error resilient. Syntactic errors, such as a missing `Name` in a `ScalarDefinition`, are added to parser’s error vector while the parser carries on parsing.
 
-![A diagram of how lexer’s tokens are arranged by the parser. On the left, different coloured boxes are stacked on top of on top of each other. These boxes represent various tokens created by the lexer. To the right, the boxes are rearranged in an upside down “tree” structure. The top of the tree is a single node. the boxes are arranged underneath the node in a top-down, left-to-right order they appear on the left. This is meant to represent the fact that the parser groups various tokens together and establishes relationships between them.](images/oxc_graphql_parser_tree_manipulation.png)
-
 The parsing step is done in two parts: we first create an untyped syntax tree, then a typed one. 
 
 #### Untyped Syntax Tree
