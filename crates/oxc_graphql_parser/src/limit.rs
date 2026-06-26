@@ -4,7 +4,7 @@ use std::fmt;
 /// track of utilization so that we can report how close to a limit we
 /// approached over the lifetime of the tracker.
 /// ```rust
-/// use oxc_graphql_parser::Parser;
+/// use oxc_graphql_parser::{Allocator, Parser};
 ///
 /// let query = "
 /// {
@@ -19,7 +19,8 @@ use std::fmt;
 /// ";
 /// // Create a new instance of a parser given a query and a
 /// // recursion limit
-/// let parser = Parser::new(query).recursion_limit(4);
+/// let allocator = Allocator::default();
+/// let parser = Parser::new(&allocator, query).recursion_limit(4);
 /// // Parse the query, and return an AST.
 /// let ast = parser.parse();
 /// // Retrieve the limits

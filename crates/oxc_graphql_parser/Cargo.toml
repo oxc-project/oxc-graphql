@@ -18,6 +18,7 @@ categories = [
 
 [dependencies]
 memchr = "2.6.1"
+oxc_allocator = ">=0.137.0"
 thiserror = "2.0.0"
 
 [dev-dependencies]

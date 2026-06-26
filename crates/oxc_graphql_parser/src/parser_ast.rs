@@ -1,13 +1,14 @@
 use crate::ast::*;
 use crate::lexer::Lexer;
 use crate::{Error, LimitTracker, T, Token, TokenKind};
+use oxc_allocator::{Allocator, Box as ArenaBox, Vec as ArenaVec};
 use std::ops::ControlFlow;
 
-#[derive(Debug)]
-pub struct Parser<'input> {
-    input: &'input str,
-    lexer: Lexer<'input>,
-    current_token: Option<Token<'input>>,
+pub struct Parser<'a> {
+    allocator: &'a Allocator,
+    input: &'a str,
+    lexer: Lexer<'a>,
+    current_token: Option<Token<'a>>,
     errors: Vec<Error>,
     recursion_limit: LimitTracker,
     accept_errors: bool,
@@ -24,9 +25,10 @@ enum Constness {
 
 const DEFAULT_RECURSION_LIMIT: usize = 500;
 
-impl<'input> Parser<'input> {
-    pub fn new(input: &'input str) -> Self {
+impl<'a> Parser<'a> {
+    pub fn new(allocator: &'a Allocator, input: &'a str) -> Self {
         Self {
+            allocator,
             input,
             lexer: Lexer::new(input),
             current_token: None,
@@ -59,19 +61,19 @@ impl<'input> Parser<'input> {
         self
     }
 
-    pub fn parse(mut self) -> Ast<Document> {
+    pub fn parse(mut self) -> Ast<'a, Document<'a>> {
         let document = self.parse_document();
         let token_limit = self.lexer.limit_tracker;
         Ast::new(self.input, document, self.errors, self.recursion_limit, token_limit)
     }
 
-    pub fn parse_selection_set(mut self) -> Ast<SelectionSet> {
+    pub fn parse_selection_set(mut self) -> Ast<'a, SelectionSet<'a>> {
         let selection_set = self.parse_selection_set_inner();
         let token_limit = self.lexer.limit_tracker;
         Ast::new(self.input, selection_set, self.errors, self.recursion_limit, token_limit)
     }
 
-    pub fn parse_type(mut self) -> Ast<Type> {
+    pub fn parse_type(mut self) -> Ast<'a, Type<'a>> {
         let ty = self.parse_type_inner().unwrap_or_else(|| {
             let span = self.current_span();
             self.err("expected a type");
@@ -81,9 +83,13 @@ impl<'input> Parser<'input> {
         Ast::new(self.input, ty, self.errors, self.recursion_limit, token_limit)
     }
 
-    fn parse_document(&mut self) -> Document {
+    fn new_vec<T>(&self) -> ArenaVec<'a, T> {
+        ArenaVec::new_in(self.allocator)
+    }
+
+    fn parse_document(&mut self) -> Document<'a> {
         let start = self.current_start();
-        let mut definitions = Vec::new();
+        let mut definitions = self.new_vec();
 
         if self.peek().is_none_or(|kind| kind == TokenKind::Eof) {
             self.err("Unexpected <EOF>.");
@@ -111,7 +117,7 @@ impl<'input> Parser<'input> {
         Document { definitions, span: self.span_from(start) }
     }
 
-    fn parse_definition(&mut self) -> Option<Definition> {
+    fn parse_definition(&mut self) -> Option<Definition<'a>> {
         let description = self.parse_description_if_present();
         let selector = match description {
             Some(_) => self.peek_data().map(str::to_string),
@@ -149,7 +155,7 @@ impl<'input> Parser<'input> {
         Some(definition)
     }
 
-    fn parse_extension(&mut self) -> Option<Definition> {
+    fn parse_extension(&mut self) -> Option<Definition<'a>> {
         let start = self.current_start();
         self.expect_name_value("extend");
 
@@ -184,8 +190,8 @@ impl<'input> Parser<'input> {
 
     fn parse_operation_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> OperationDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> OperationDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
 
@@ -195,8 +201,8 @@ impl<'input> Parser<'input> {
                 description,
                 operation_type: OperationType::Query,
                 name: None,
-                variable_definitions: Vec::new(),
-                directives: Vec::new(),
+                variable_definitions: self.new_vec(),
+                directives: self.new_vec(),
                 selection_set,
                 span: self.span_from(start),
             };
@@ -244,8 +250,8 @@ impl<'input> Parser<'input> {
 
     fn parse_fragment_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> FragmentDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> FragmentDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("fragment");
@@ -254,7 +260,7 @@ impl<'input> Parser<'input> {
             if self.allow_legacy_fragment_variables && self.peek() == Some(T!['(']) {
                 self.parse_variable_definitions_if_present()
             } else {
-                Vec::new()
+                self.new_vec()
             };
 
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment"));
@@ -279,10 +285,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_selection_set_inner(&mut self) -> SelectionSet {
+    fn parse_selection_set_inner(&mut self) -> SelectionSet<'a> {
         let start = self.current_start();
         self.expect(T!['{'], "expected {");
-        let mut selections = Vec::new();
+        let mut selections = self.new_vec();
 
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
@@ -310,7 +316,7 @@ impl<'input> Parser<'input> {
         SelectionSet { selections, span: self.span_from(start) }
     }
 
-    fn parse_selection(&mut self) -> Selection {
+    fn parse_selection(&mut self) -> Selection<'a> {
         if self.peek() == Some(T![...]) {
             self.parse_fragment_selection()
         } else {
@@ -318,7 +324,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_fragment_selection(&mut self) -> Selection {
+    fn parse_fragment_selection(&mut self) -> Selection<'a> {
         let start = self.current_start();
         self.expect(T![...], "expected ...");
 
@@ -361,7 +367,7 @@ impl<'input> Parser<'input> {
         Selection::FragmentSpread(FragmentSpread { name, directives, span: self.span_from(start) })
     }
 
-    fn parse_field(&mut self) -> Field {
+    fn parse_field(&mut self) -> Field<'a> {
         let start = self.current_start();
         let first_name = self.parse_name().unwrap_or_else(|| self.missing_name("field"));
         let (alias, name) = if self.peek() == Some(T![:]) {
@@ -383,13 +389,13 @@ impl<'input> Parser<'input> {
         Field { alias, name, arguments, directives, selection_set, span: self.span_from(start) }
     }
 
-    fn parse_arguments_if_present(&mut self, constness: Constness) -> Vec<Argument> {
+    fn parse_arguments_if_present(&mut self, constness: Constness) -> ArenaVec<'a, Argument<'a>> {
         if self.peek() != Some(T!['(']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut arguments = Vec::new();
+        let mut arguments = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
                 parser.bump();
@@ -411,7 +417,7 @@ impl<'input> Parser<'input> {
         arguments
     }
 
-    fn parse_argument(&mut self, constness: Constness) -> Argument {
+    fn parse_argument(&mut self, constness: Constness) -> Argument<'a> {
         let start = self.current_start();
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("argument"));
         let value = if self.peek() == Some(T![:]) {
@@ -424,13 +430,13 @@ impl<'input> Parser<'input> {
         Argument { name, value, span: self.span_from(start) }
     }
 
-    fn parse_variable_definitions_if_present(&mut self) -> Vec<VariableDefinition> {
+    fn parse_variable_definitions_if_present(&mut self) -> ArenaVec<'a, VariableDefinition<'a>> {
         if self.peek() != Some(T!['(']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut definitions = Vec::new();
+        let mut definitions = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
                 if definitions.is_empty() {
@@ -455,7 +461,7 @@ impl<'input> Parser<'input> {
         definitions
     }
 
-    fn parse_variable_definition(&mut self) -> VariableDefinition {
+    fn parse_variable_definition(&mut self) -> VariableDefinition<'a> {
         let start = self.current_start();
         let description = if self.allow_executable_descriptions {
             self.parse_description_if_present()
@@ -465,7 +471,7 @@ impl<'input> Parser<'input> {
         let variable = self.parse_variable().unwrap_or_else(|| self.missing_variable());
         let mut ty = None;
         let mut default_value = None;
-        let mut directives = Vec::new();
+        let mut directives = self.new_vec();
 
         if self.peek() == Some(T![:]) {
             self.bump();
@@ -489,7 +495,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_variable(&mut self) -> Option<Variable> {
+    fn parse_variable(&mut self) -> Option<Variable<'a>> {
         let start = self.current_start();
         if self.peek() != Some(T![$]) {
             self.err("expected a Variable");
@@ -500,15 +506,15 @@ impl<'input> Parser<'input> {
         Some(Variable { name, span: self.span_from(start) })
     }
 
-    fn parse_directives(&mut self, constness: Constness) -> Vec<Directive> {
-        let mut directives = Vec::new();
+    fn parse_directives(&mut self, constness: Constness) -> ArenaVec<'a, Directive<'a>> {
+        let mut directives = self.new_vec();
         while self.peek() == Some(T![@]) {
             directives.push(self.parse_directive(constness));
         }
         directives
     }
 
-    fn parse_directive(&mut self, constness: Constness) -> Directive {
+    fn parse_directive(&mut self, constness: Constness) -> Directive<'a> {
         let start = self.current_start();
         self.expect(T![@], "expected @ symbol");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("directive"));
@@ -516,7 +522,7 @@ impl<'input> Parser<'input> {
         Directive { name, arguments, span: self.span_from(start) }
     }
 
-    fn parse_value(&mut self, constness: Constness, pop_on_error: bool) -> Value {
+    fn parse_value(&mut self, constness: Constness, pop_on_error: bool) -> Value<'a> {
         match self.peek() {
             Some(T![$]) => {
                 if matches!(constness, Constness::Const) {
@@ -545,27 +551,27 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_int_value(&mut self) -> Value {
+    fn parse_int_value(&mut self) -> Value<'a> {
         let token = self.bump().expect("peeked int token must be available");
         Value::Int(IntValue {
-            raw: token.data().to_string(),
+            raw: token.data(),
             span: Span::new(token.index(), token.index() + token.data().len()),
         })
     }
 
-    fn parse_float_value(&mut self) -> Value {
+    fn parse_float_value(&mut self) -> Value<'a> {
         let token = self.bump().expect("peeked float token must be available");
         Value::Float(FloatValue {
-            raw: token.data().to_string(),
+            raw: token.data(),
             span: Span::new(token.index(), token.index() + token.data().len()),
         })
     }
 
-    fn parse_name_value(&mut self) -> Value {
+    fn parse_name_value(&mut self) -> Value<'a> {
         let Some(name) = self.parse_name() else {
             return Value::Missing(self.current_span());
         };
-        match name.value.as_str() {
+        match name.value {
             "true" => Value::Boolean(BooleanValue { value: true, span: name.span }),
             "false" => Value::Boolean(BooleanValue { value: false, span: name.span }),
             "null" => Value::Null(NullValue { span: name.span }),
@@ -573,10 +579,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_list_value(&mut self, constness: Constness) -> Value {
+    fn parse_list_value(&mut self, constness: Constness) -> Value<'a> {
         let start = self.current_start();
         self.expect(T!['['], "expected [");
-        let mut values = Vec::new();
+        let mut values = self.new_vec();
 
         self.peek_while(|parser, kind| match kind {
             T![']'] => {
@@ -601,10 +607,10 @@ impl<'input> Parser<'input> {
         Value::List(ListValue { values, span: self.span_from(start) })
     }
 
-    fn parse_object_value(&mut self, constness: Constness) -> Value {
+    fn parse_object_value(&mut self, constness: Constness) -> Value<'a> {
         let start = self.current_start();
         self.expect(T!['{'], "expected {");
-        let mut fields = Vec::new();
+        let mut fields = self.new_vec();
 
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
@@ -628,7 +634,7 @@ impl<'input> Parser<'input> {
         Value::Object(ObjectValue { fields, span: self.span_from(start) })
     }
 
-    fn parse_object_field(&mut self, constness: Constness) -> ObjectField {
+    fn parse_object_field(&mut self, constness: Constness) -> ObjectField<'a> {
         let start = self.current_start();
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("object field"));
         let value = if self.peek() == Some(T![:]) {
@@ -641,7 +647,7 @@ impl<'input> Parser<'input> {
         ObjectField { name, value, span: self.span_from(start) }
     }
 
-    fn parse_type_inner(&mut self) -> Option<Type> {
+    fn parse_type_inner(&mut self) -> Option<Type<'a>> {
         let start = self.current_start();
         let mut ty = match self.peek() {
             Some(T!['[']) => {
@@ -653,7 +659,10 @@ impl<'input> Parser<'input> {
                 let inner = self.parse_type_inner().unwrap_or(Type::Missing(self.current_span()));
                 self.recursion_limit.decrement();
                 self.expect(T![']'], "expected ]");
-                Type::List(ListType { ty: Box::new(inner), span: self.span_from(start) })
+                Type::List(ListType {
+                    ty: ArenaBox::new_in(inner, self.allocator),
+                    span: self.span_from(start),
+                })
             }
             Some(TokenKind::Name) => {
                 let name = self.parse_name().unwrap_or_else(|| self.missing_name("type"));
@@ -668,17 +677,23 @@ impl<'input> Parser<'input> {
 
         if self.peek() == Some(T![!]) {
             self.bump();
-            ty = Type::NonNull(NonNullType { ty: Box::new(ty), span: self.span_from(start) });
+            ty = Type::NonNull(NonNullType {
+                ty: ArenaBox::new_in(ty, self.allocator),
+                span: self.span_from(start),
+            });
         }
 
         Some(ty)
     }
 
-    fn parse_named_type(&mut self) -> Option<NamedType> {
+    fn parse_named_type(&mut self) -> Option<NamedType<'a>> {
         self.parse_name().map(|name| NamedType { name })
     }
 
-    fn parse_schema_definition(&mut self, description: Option<StringValue>) -> SchemaDefinition {
+    fn parse_schema_definition(
+        &mut self,
+        description: Option<StringValue<'a>>,
+    ) -> SchemaDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("schema");
@@ -687,7 +702,7 @@ impl<'input> Parser<'input> {
         SchemaDefinition { description, directives, root_operations, span: self.span_from(start) }
     }
 
-    fn parse_schema_extension_from(&mut self, start: usize) -> SchemaExtension {
+    fn parse_schema_extension_from(&mut self, start: usize) -> SchemaExtension<'a> {
         self.expect_name_value("schema");
         let directives = self.parse_directives(Constness::Const);
         let root_operations = self.parse_root_operation_types_if_present();
@@ -697,13 +712,15 @@ impl<'input> Parser<'input> {
         SchemaExtension { directives, root_operations, span: self.span_from(start) }
     }
 
-    fn parse_root_operation_types_if_present(&mut self) -> Vec<RootOperationTypeDefinition> {
+    fn parse_root_operation_types_if_present(
+        &mut self,
+    ) -> ArenaVec<'a, RootOperationTypeDefinition<'a>> {
         if self.peek() != Some(T!['{']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut root_operations = Vec::new();
+        let mut root_operations = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
                 parser.bump();
@@ -725,7 +742,7 @@ impl<'input> Parser<'input> {
         root_operations
     }
 
-    fn parse_root_operation_type_definition(&mut self) -> RootOperationTypeDefinition {
+    fn parse_root_operation_type_definition(&mut self) -> RootOperationTypeDefinition<'a> {
         let start = self.current_start();
         let operation_type = match self.peek_data() {
             Some("query") => {
@@ -752,8 +769,8 @@ impl<'input> Parser<'input> {
 
     fn parse_directive_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> DirectiveDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> DirectiveDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("directive");
@@ -779,19 +796,19 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_directive_locations(&mut self) -> Vec<DirectiveLocation> {
+    fn parse_directive_locations(&mut self) -> ArenaVec<'a, DirectiveLocation<'a>> {
         if self.peek() == Some(T![|]) {
             self.bump();
         }
 
-        let mut locations = Vec::new();
+        let mut locations = self.new_vec();
         loop {
             if let Some(token) = self.peek_token().cloned()
                 && token.kind() == TokenKind::Name
             {
                 self.bump();
                 locations.push(DirectiveLocation {
-                    name: token.data().to_string(),
+                    name: token.data(),
                     span: Span::new(token.index(), token.index() + token.data().len()),
                 });
             } else {
@@ -810,8 +827,8 @@ impl<'input> Parser<'input> {
 
     fn parse_scalar_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> ScalarTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> ScalarTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("scalar");
@@ -820,7 +837,7 @@ impl<'input> Parser<'input> {
         ScalarTypeDefinition { description, name, directives, span: self.span_from(start) }
     }
 
-    fn parse_scalar_type_extension_from(&mut self, start: usize) -> ScalarTypeExtension {
+    fn parse_scalar_type_extension_from(&mut self, start: usize) -> ScalarTypeExtension<'a> {
         self.expect_name_value("scalar");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("scalar"));
         let directives = self.parse_directives(Constness::Const);
@@ -832,8 +849,8 @@ impl<'input> Parser<'input> {
 
     fn parse_object_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> ObjectTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> ObjectTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("type");
@@ -851,7 +868,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_object_type_extension_from(&mut self, start: usize) -> ObjectTypeExtension {
+    fn parse_object_type_extension_from(&mut self, start: usize) -> ObjectTypeExtension<'a> {
         self.expect_name_value("type");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("object type"));
         let interfaces = self.parse_implements_interfaces();
@@ -865,8 +882,8 @@ impl<'input> Parser<'input> {
 
     fn parse_interface_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> InterfaceTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> InterfaceTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("interface");
@@ -884,7 +901,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_interface_type_extension_from(&mut self, start: usize) -> InterfaceTypeExtension {
+    fn parse_interface_type_extension_from(&mut self, start: usize) -> InterfaceTypeExtension<'a> {
         self.expect_name_value("interface");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("interface"));
         let interfaces = self.parse_implements_interfaces();
@@ -896,9 +913,9 @@ impl<'input> Parser<'input> {
         InterfaceTypeExtension { name, interfaces, directives, fields, span: self.span_from(start) }
     }
 
-    fn parse_implements_interfaces(&mut self) -> Vec<NamedType> {
+    fn parse_implements_interfaces(&mut self) -> ArenaVec<'a, NamedType<'a>> {
         if self.peek_data() != Some("implements") {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
@@ -906,7 +923,7 @@ impl<'input> Parser<'input> {
             self.bump();
         }
 
-        let mut interfaces = Vec::new();
+        let mut interfaces = self.new_vec();
         loop {
             if let Some(named_type) = self.parse_named_type() {
                 interfaces.push(named_type);
@@ -924,13 +941,13 @@ impl<'input> Parser<'input> {
         interfaces
     }
 
-    fn parse_fields_definition_if_present(&mut self) -> Vec<FieldDefinition> {
+    fn parse_fields_definition_if_present(&mut self) -> ArenaVec<'a, FieldDefinition<'a>> {
         if self.peek() != Some(T!['{']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut fields = Vec::new();
+        let mut fields = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
                 if fields.is_empty() {
@@ -955,7 +972,7 @@ impl<'input> Parser<'input> {
         fields
     }
 
-    fn parse_field_definition(&mut self) -> FieldDefinition {
+    fn parse_field_definition(&mut self) -> FieldDefinition<'a> {
         let start = self.current_start();
         let description = self.parse_description_if_present();
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("field definition"));
@@ -978,13 +995,13 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_arguments_definition_if_present(&mut self) -> Vec<InputValueDefinition> {
+    fn parse_arguments_definition_if_present(&mut self) -> ArenaVec<'a, InputValueDefinition<'a>> {
         if self.peek() != Some(T!['(']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut definitions = Vec::new();
+        let mut definitions = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
                 parser.bump();
@@ -1006,7 +1023,7 @@ impl<'input> Parser<'input> {
         definitions
     }
 
-    fn parse_input_value_definition(&mut self) -> InputValueDefinition {
+    fn parse_input_value_definition(&mut self) -> InputValueDefinition<'a> {
         let start = self.current_start();
         let description = self.parse_description_if_present();
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("input value"));
@@ -1036,8 +1053,8 @@ impl<'input> Parser<'input> {
 
     fn parse_union_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> UnionTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> UnionTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("union");
@@ -1047,7 +1064,7 @@ impl<'input> Parser<'input> {
         UnionTypeDefinition { description, name, directives, members, span: self.span_from(start) }
     }
 
-    fn parse_union_type_extension_from(&mut self, start: usize) -> UnionTypeExtension {
+    fn parse_union_type_extension_from(&mut self, start: usize) -> UnionTypeExtension<'a> {
         self.expect_name_value("union");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("union"));
         let directives = self.parse_directives(Constness::Const);
@@ -1058,9 +1075,9 @@ impl<'input> Parser<'input> {
         UnionTypeExtension { name, directives, members, span: self.span_from(start) }
     }
 
-    fn parse_union_members_if_present(&mut self) -> Vec<NamedType> {
+    fn parse_union_members_if_present(&mut self) -> ArenaVec<'a, NamedType<'a>> {
         if self.peek() != Some(T![=]) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
@@ -1068,7 +1085,7 @@ impl<'input> Parser<'input> {
             self.bump();
         }
 
-        let mut members = Vec::new();
+        let mut members = self.new_vec();
         loop {
             if let Some(member) = self.parse_named_type() {
                 members.push(member);
@@ -1088,8 +1105,8 @@ impl<'input> Parser<'input> {
 
     fn parse_enum_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> EnumTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> EnumTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("enum");
@@ -1099,7 +1116,7 @@ impl<'input> Parser<'input> {
         EnumTypeDefinition { description, name, directives, values, span: self.span_from(start) }
     }
 
-    fn parse_enum_type_extension_from(&mut self, start: usize) -> EnumTypeExtension {
+    fn parse_enum_type_extension_from(&mut self, start: usize) -> EnumTypeExtension<'a> {
         self.expect_name_value("enum");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("enum"));
         let directives = self.parse_directives(Constness::Const);
@@ -1110,13 +1127,13 @@ impl<'input> Parser<'input> {
         EnumTypeExtension { name, directives, values, span: self.span_from(start) }
     }
 
-    fn parse_enum_values_definition_if_present(&mut self) -> Vec<EnumValueDefinition> {
+    fn parse_enum_values_definition_if_present(&mut self) -> ArenaVec<'a, EnumValueDefinition<'a>> {
         if self.peek() != Some(T!['{']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut values = Vec::new();
+        let mut values = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
                 if values.is_empty() {
@@ -1141,7 +1158,7 @@ impl<'input> Parser<'input> {
         values
     }
 
-    fn parse_enum_value_definition(&mut self) -> EnumValueDefinition {
+    fn parse_enum_value_definition(&mut self) -> EnumValueDefinition<'a> {
         let start = self.current_start();
         let description = self.parse_description_if_present();
         let value = EnumValue {
@@ -1156,8 +1173,8 @@ impl<'input> Parser<'input> {
 
     fn parse_input_object_type_definition(
         &mut self,
-        description: Option<StringValue>,
-    ) -> InputObjectTypeDefinition {
+        description: Option<StringValue<'a>>,
+    ) -> InputObjectTypeDefinition<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("input");
@@ -1173,7 +1190,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_input_object_type_extension_from(&mut self, start: usize) -> InputObjectTypeExtension {
+    fn parse_input_object_type_extension_from(
+        &mut self,
+        start: usize,
+    ) -> InputObjectTypeExtension<'a> {
         self.expect_name_value("input");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("input object"));
         let directives = self.parse_directives(Constness::Const);
@@ -1184,13 +1204,15 @@ impl<'input> Parser<'input> {
         InputObjectTypeExtension { name, directives, fields, span: self.span_from(start) }
     }
 
-    fn parse_input_fields_definition_if_present(&mut self) -> Vec<InputValueDefinition> {
+    fn parse_input_fields_definition_if_present(
+        &mut self,
+    ) -> ArenaVec<'a, InputValueDefinition<'a>> {
         if self.peek() != Some(T!['{']) {
-            return Vec::new();
+            return self.new_vec();
         }
 
         self.bump();
-        let mut fields = Vec::new();
+        let mut fields = self.new_vec();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
                 if fields.is_empty() {
@@ -1215,18 +1237,20 @@ impl<'input> Parser<'input> {
         fields
     }
 
-    fn parse_description_if_present(&mut self) -> Option<StringValue> {
+    fn parse_description_if_present(&mut self) -> Option<StringValue<'a>> {
         if self.peek() == Some(TokenKind::StringValue) { self.parse_string_value() } else { None }
     }
 
-    fn parse_string_value(&mut self) -> Option<StringValue> {
+    fn parse_string_value(&mut self) -> Option<StringValue<'a>> {
         let token = self.bump()?;
-        let raw = token.data().to_string();
+        let raw = token.data();
         let block = raw.starts_with(r#"""""#);
         let value = if block {
-            normalize_block_string(&raw)
+            let value = normalize_block_string(raw);
+            self.allocator.alloc_str(&value)
         } else {
-            unescape_string(raw.trim_matches('"'))
+            let value = unescape_string(raw.trim_matches('"'));
+            self.allocator.alloc_str(&value)
         };
         Some(StringValue {
             raw,
@@ -1236,7 +1260,7 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_name(&mut self) -> Option<Name> {
+    fn parse_name(&mut self) -> Option<Name<'a>> {
         let token = self.peek_token().cloned()?;
         if token.kind() != TokenKind::Name {
             self.err("expected a Name");
@@ -1244,7 +1268,7 @@ impl<'input> Parser<'input> {
         }
         self.bump();
         Some(Name {
-            value: token.data().to_string(),
+            value: token.data(),
             span: Span::new(token.index(), token.index() + token.data().len()),
         })
     }
@@ -1265,16 +1289,15 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn missing_name(&self, context: &str) -> Name {
-        Name { value: String::new(), span: Span::new(self.last_end, self.last_end) }
-            .with_context(context)
+    fn missing_name(&self, context: &str) -> Name<'a> {
+        Name { value: "", span: Span::new(self.last_end, self.last_end) }.with_context(context)
     }
 
-    fn missing_named_type(&self) -> NamedType {
+    fn missing_named_type(&self) -> NamedType<'a> {
         NamedType { name: self.missing_name("type") }
     }
 
-    fn missing_variable(&self) -> Variable {
+    fn missing_variable(&self) -> Variable<'a> {
         Variable {
             name: self.missing_name("variable"),
             span: Span::new(self.last_end, self.last_end),
@@ -1317,10 +1340,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn peek_while(
-        &mut self,
-        mut run: impl FnMut(&mut Parser<'input>, TokenKind) -> ControlFlow<()>,
-    ) {
+    fn peek_while(&mut self, mut run: impl FnMut(&mut Parser<'a>, TokenKind) -> ControlFlow<()>) {
         while let Some(kind) = self.peek() {
             let before = self.current_token.clone();
             match run(self, kind) {
@@ -1339,18 +1359,18 @@ impl<'input> Parser<'input> {
         self.peek_token().map(Token::kind)
     }
 
-    fn peek_data(&mut self) -> Option<&'input str> {
+    fn peek_data(&mut self) -> Option<&'a str> {
         self.peek_token().map(Token::data)
     }
 
-    fn peek_token(&mut self) -> Option<&Token<'input>> {
+    fn peek_token(&mut self) -> Option<&Token<'a>> {
         if self.current_token.is_none() {
             self.current_token = self.next_significant_token();
         }
         self.current_token.as_ref()
     }
 
-    fn bump(&mut self) -> Option<Token<'input>> {
+    fn bump(&mut self) -> Option<Token<'a>> {
         let token = if let Some(token) = self.current_token.take() {
             token
         } else {
@@ -1360,7 +1380,7 @@ impl<'input> Parser<'input> {
         Some(token)
     }
 
-    fn next_significant_token(&mut self) -> Option<Token<'input>> {
+    fn next_significant_token(&mut self) -> Option<Token<'a>> {
         for item in &mut self.lexer {
             match item {
                 Ok(token) if is_ignored(token.kind()) => continue,
@@ -1395,7 +1415,7 @@ trait MissingNameContext {
     fn with_context(self, context: &str) -> Self;
 }
 
-impl MissingNameContext for Name {
+impl MissingNameContext for Name<'_> {
     fn with_context(self, _context: &str) -> Self {
         self
     }

@@ -16,3 +16,4 @@ pub use crate::lexer::Token;
 pub use crate::lexer::TokenKind;
 pub use crate::limit::LimitTracker;
 pub use crate::parser_ast::Parser;
+pub use oxc_allocator::Allocator;

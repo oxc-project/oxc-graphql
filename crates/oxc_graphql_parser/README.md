@@ -27,10 +27,11 @@ The Cargo package name uses hyphens. Import it from Rust as `oxc_graphql_parser`
 ## Usage
 
 ```rust
-use oxc_graphql_parser::Parser;
+use oxc_graphql_parser::{Allocator, Parser};
 
 let input = "union SearchResult = Photo | Person | Cat | Dog";
-let parser = Parser::new(input);
+let allocator = Allocator::default();
+let parser = Parser::new(&allocator, input);
 let ast = parser.parse();
 
 assert_eq!(0, ast.errors().len());
@@ -40,10 +41,11 @@ assert_eq!(0, ast.errors().len());
 errors. Check `ast.errors()` before walking the document:
 
 ```rust
-use oxc_graphql_parser::Parser;
+use oxc_graphql_parser::{Allocator, Parser};
 
 let input = "union SearchResult = Photo | Person | Cat | Dog";
-let parser = Parser::new(input);
+let allocator = Allocator::default();
+let parser = Parser::new(&allocator, input);
 let ast = parser.parse();
 
 assert_eq!(0, ast.errors().len());
@@ -65,7 +67,7 @@ The [examples directory] contains integrations for diagnostics and analysis:
 ### Get Field Names In An Object
 
 ```rust
-use oxc_graphql_parser::{ast, Parser};
+use oxc_graphql_parser::{Allocator, ast, Parser};
 
 let input = "
 type ProductDimension {
@@ -74,7 +76,8 @@ type ProductDimension {
 }
 ";
 
-let parser = Parser::new(input);
+let allocator = Allocator::default();
+let parser = Parser::new(&allocator, input);
 let ast = parser.parse();
 
 assert_eq!(0, ast.errors().len());
@@ -94,7 +97,7 @@ for definition in &document.definitions {
 ### Get Variables Used In A Query
 
 ```rust
-use oxc_graphql_parser::{ast, Parser};
+use oxc_graphql_parser::{Allocator, ast, Parser};
 
 let input = "
 query GraphQuery($graph_id: ID!, $variant: String) {
@@ -106,7 +109,8 @@ query GraphQuery($graph_id: ID!, $variant: String) {
 }
 ";
 
-let parser = Parser::new(input);
+let allocator = Allocator::default();
+let parser = Parser::new(&allocator, input);
 let ast = parser.parse();
 
 assert_eq!(0, ast.errors().len());

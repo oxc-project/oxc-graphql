@@ -1,3 +1,4 @@
+use crate::Allocator;
 use crate::Lexer;
 use crate::Parser;
 use crate::TokenKind;
@@ -25,7 +26,8 @@ type Query {
   hello(name: String = "world"): String
 }
 "#;
-    let ast = Parser::new(source).parse();
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
 
     assert_eq!(ast.errors().len(), 0);
     let document = ast.document();
@@ -51,7 +53,8 @@ query GraphQuery($graph_id: ID!, $variant: String) {
   }
 }
 "#;
-    let ast = Parser::new(source).parse();
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
     assert_eq!(ast.errors().len(), 0);
 
     let ast::Definition::Operation(operation) = &ast.document().definitions[0] else {
@@ -67,11 +70,12 @@ query GraphQuery($graph_id: ID!, $variant: String) {
 
 #[test]
 fn parser_parses_selection_set_and_type_roots() {
-    let selection = Parser::new("{ product { name } }").parse_selection_set();
+    let allocator = Allocator::default();
+    let selection = Parser::new(&allocator, "{ product { name } }").parse_selection_set();
     assert_eq!(selection.errors().len(), 0);
     assert_eq!(selection.field_set().selections.len(), 1);
 
-    let ty = Parser::new("[String!]!").parse_type();
+    let ty = Parser::new(&allocator, "[String!]!").parse_type();
     assert_eq!(ty.errors().len(), 0);
     assert!(matches!(ty.ty(), ast::Type::NonNull(_)));
 }
@@ -80,7 +84,8 @@ fn parser_parses_selection_set_and_type_roots() {
 fn parser_ok_fixtures_have_no_errors() {
     for path in graphql_files("parser/ok") {
         let source = fs::read_to_string(&path).unwrap();
-        let ast = Parser::new(&source).parse();
+        let allocator = Allocator::default();
+        let ast = Parser::new(&allocator, &source).parse();
         let errors = ast.errors().collect::<Vec<_>>();
         assert!(errors.is_empty(), "{}: {errors:?}", path.display());
     }
@@ -90,7 +95,8 @@ fn parser_ok_fixtures_have_no_errors() {
 fn parser_err_fixtures_have_errors() {
     for path in graphql_files("parser/err") {
         let source = fs::read_to_string(&path).unwrap();
-        let ast = Parser::new(&source).parse();
+        let allocator = Allocator::default();
+        let ast = Parser::new(&allocator, &source).parse();
         assert!(ast.errors().len() > 0, "{}", path.display());
     }
 }
@@ -107,7 +113,8 @@ fn ecosystem_graphql_corpus_has_no_parse_errors() {
     let mut failures = Vec::new();
     for path in &files {
         let source = fs::read_to_string(path).unwrap();
-        let ast = Parser::new(&source).parse();
+        let allocator = Allocator::default();
+        let ast = Parser::new(&allocator, &source).parse();
         let errors = ast.errors().collect::<Vec<_>>();
         if !errors.is_empty() {
             failures.push(format!("{}: {errors:?}", path.display()));
@@ -123,7 +130,7 @@ fn ecosystem_graphql_corpus_has_no_parse_errors() {
     );
 }
 
-fn collect_variables<'a>(selection_set: &'a ast::SelectionSet, output: &mut Vec<&'a str>) {
+fn collect_variables<'a>(selection_set: &'a ast::SelectionSet<'_>, output: &mut Vec<&'a str>) {
     for selection in &selection_set.selections {
         if let ast::Selection::Field(field) = selection {
             for argument in &field.arguments {
@@ -136,7 +143,7 @@ fn collect_variables<'a>(selection_set: &'a ast::SelectionSet, output: &mut Vec<
     }
 }
 
-fn collect_variable_value<'a>(value: Option<&'a ast::Value>, output: &mut Vec<&'a str>) {
+fn collect_variable_value<'a>(value: Option<&'a ast::Value<'_>>, output: &mut Vec<&'a str>) {
     match value {
         Some(ast::Value::Variable(variable)) => output.push(variable.name.as_str()),
         Some(ast::Value::List(list)) => {

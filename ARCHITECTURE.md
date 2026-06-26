@@ -34,15 +34,16 @@ node spans.
 The main entry points are:
 
 ```rust
-use oxc_graphql_parser::Parser;
+use oxc_graphql_parser::{Allocator, Parser};
 
-let document = Parser::new("query Q { viewer { id } }").parse();
+let allocator = Allocator::default();
+let document = Parser::new(&allocator, "query Q { viewer { id } }").parse();
 assert_eq!(document.errors().len(), 0);
 
-let selection_set = Parser::new("{ viewer { id } }").parse_selection_set();
+let selection_set = Parser::new(&allocator, "{ viewer { id } }").parse_selection_set();
 assert_eq!(selection_set.errors().len(), 0);
 
-let ty = Parser::new("[String!]!").parse_type();
+let ty = Parser::new(&allocator, "[String!]!").parse_type();
 assert_eq!(ty.errors().len(), 0);
 ```
 
@@ -53,9 +54,10 @@ The AST lives in `oxc_graphql_parser::ast`. It uses semantic Rust types such as
 `Value`, and `Type`.
 
 ```rust
-use oxc_graphql_parser::{ast, Parser};
+use oxc_graphql_parser::{Allocator, ast, Parser};
 
-let parsed = Parser::new("type Query { hello: String }").parse();
+let allocator = Allocator::default();
+let parsed = Parser::new(&allocator, "type Query { hello: String }").parse();
 let document = parsed.document();
 
 let ast::Definition::ObjectType(object) = &document.definitions[0] else {
