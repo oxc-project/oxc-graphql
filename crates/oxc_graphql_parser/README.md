@@ -1,53 +1,30 @@
-<div align="center">
-  <h1><code>oxc-graphql-parser</code></h1>
+# oxc-graphql-parser
 
-  <p>
-    <strong>A parser for the GraphQL language.</strong>
-  </p>
-  <p>
-    <a href="https://crates.io/crates/oxc-graphql-parser">
-        <img src="https://img.shields.io/crates/v/oxc-graphql-parser.svg?style=flat-square" alt="Crates.io version" />
-    </a>
-    <a href="https://crates.io/crates/oxc-graphql-parser">
-        <img src="https://img.shields.io/crates/d/oxc-graphql-parser.svg?style=flat-square" alt="Download" />
-    </a>
-    <a href="https://docs.rs/oxc-graphql-parser/">
-        <img src="https://img.shields.io/static/v1?label=docs&message=oxc-graphql-parser&color=blue&style=flat-square" alt="docs.rs docs" />
-    </a>
-  </p>
-</div>
+A spec-compliant, error-resilient GraphQL lexer and parser for Rust.
 
 ## Features
-* Typed GraphQL Concrete Syntax Tree as per [October 2021 specification]
-* Error resilience
-  * lexing and parsing does not fail or `panic` if a lexical or a syntax error is found
-* GraphQL lexer
-* GraphQL parser
 
-## Getting started
-Add the dependency to start using `oxc-graphql-parser`:
+- Typed GraphQL concrete syntax tree based on the [October 2021 specification]
+- Error-resilient lexing and parsing
+- GraphQL schema and query parsing
+- Standalone lexer API
+
+## Installation
+
 ```bash
 cargo add oxc-graphql-parser
 ```
 
-Or add this to your `Cargo.toml` for a manual installation:
+Or add it manually:
 
 ```toml
-# Just an example, change to the necessary package version.
 [dependencies]
 oxc-graphql-parser = "0.0.1"
 ```
 
-## Rust versions
-
-`oxc-graphql-parser` is tested on the latest stable version of Rust.
-Older version may or may not be compatible.
+The Cargo package name uses hyphens. Import it from Rust as `oxc_graphql_parser`.
 
 ## Usage
-`oxc-graphql-parser` is built to parse both GraphQL schemas and queries according to
-the latest [October 2021 specification]. It produces a typed syntax tree that
-then can be walked, extracting all the necessary information. You can quick
-start with:
 
 ```rust
 use oxc_graphql_parser::Parser;
@@ -55,9 +32,12 @@ use oxc_graphql_parser::Parser;
 let input = "union SearchResult = Photo | Person | Cat | Dog";
 let parser = Parser::new(input);
 let cst = parser.parse();
+
+assert!(cst.errors().is_empty());
 ```
 
-`oxc-graphql-parser` is built to be error-resilient. This means we don't abort parsing (or lexing) if an error occurs. That means `parser.parse()` will always produce a CST (Concrete Syntax Tree), and it will be accompanied by any errors that are encountered:
+`Parser::parse` always returns a concrete syntax tree, even when lexing or
+parsing reports errors. Check `cst.errors()` before walking the document:
 
 ```rust
 use oxc_graphql_parser::Parser;
@@ -66,27 +46,23 @@ let input = "union SearchResult = Photo | Person | Cat | Dog";
 let parser = Parser::new(input);
 let cst = parser.parse();
 
-// cst.errors() returns an iterator with the errors encountered during lexing and parsing
 assert_eq!(0, cst.errors().len());
 
-// cst.document() gets the Document, or root node, of the tree that you can
-// start iterating on.
-let doc = cst.document();
+let document = cst.document();
+for definition in document.definitions() {
+    println!("{definition:?}");
+}
 ```
 
-### Examples
+## Examples
 
-Two examples outlined here:
-* [Get field names in an object]
-* [Get variables used in a query]
+The [examples directory] contains integrations for diagnostics and analysis:
 
-The [examples directory] in this repository has a few more useful
-implementations such as:
-* [using oxc-graphql-parser with miette to display error diagnostics]
-* [using oxc-graphql-parser with annotate_snippets to display error diagnostics]
-* [checking for unused variables]
+- [using oxc-graphql-parser with ariadne to display error diagnostics]
+- [using oxc-graphql-parser with annotate_snippets to display error diagnostics]
+- [checking for unused variables]
 
-#### Get field names in an object
+### Get Field Names In An Object
 
 ```rust
 use oxc_graphql_parser::{cst, Parser};
@@ -97,75 +73,80 @@ type ProductDimension {
   weight: Float @tag(name: \"hi from inventory value type field\")
 }
 ";
+
 let parser = Parser::new(input);
 let cst = parser.parse();
+
 assert_eq!(0, cst.errors().len());
 
-let doc = cst.document();
-
-for def in doc.definitions() {
-    if let cst::Definition::ObjectTypeDefinition(object_type) = def {
+let document = cst.document();
+for definition in document.definitions() {
+    if let cst::Definition::ObjectTypeDefinition(object_type) = definition {
         assert_eq!(object_type.name().unwrap().text(), "ProductDimension");
-        for field_def in object_type.fields_definition().unwrap().field_definitions() {
-            println!("{}", field_def.name().unwrap().text()); // size weight
+
+        for field in object_type.fields_definition().unwrap().field_definitions() {
+            println!("{}", field.name().unwrap().text());
         }
     }
 }
 ```
 
-#### Get variables used in a query
+### Get Variables Used In A Query
 
 ```rust
 use oxc_graphql_parser::{cst, Parser};
 
 let input = "
-  query GraphQuery($graph_id: ID!, $variant: String) {
-    service(id: $graph_id) {
-      schema(tag: $variant) {
-        document
-      }
+query GraphQuery($graph_id: ID!, $variant: String) {
+  service(id: $graph_id) {
+    schema(tag: $variant) {
+      document
     }
   }
-  ";
+}
+";
 
-  let parser = Parser::new(input);
-  let cst = parser.parse();
-  assert_eq!(0, cst.errors().len());
+let parser = Parser::new(input);
+let cst = parser.parse();
 
-  let doc = cst.document();
+assert_eq!(0, cst.errors().len());
 
-  for def in doc.definitions() {
-      if let cst::Definition::OperationDefinition(op_def) = def {
-          assert_eq!(op_def.name().unwrap().text(), "GraphQuery");
+let document = cst.document();
+for definition in document.definitions() {
+    if let cst::Definition::OperationDefinition(operation) = definition {
+        assert_eq!(operation.name().unwrap().text(), "GraphQuery");
 
-          let variable_defs = op_def.variable_definitions();
-          let variables: Vec<String> = variable_defs
-              .iter()
-              .map(|v| v.variable_definitions())
-              .flatten()
-              .filter_map(|v| Some(v.variable()?.text().to_string()))
-              .collect();
-          assert_eq!(
-              variables.as_slice(),
-              ["graph_id".to_string(), "variant".to_string()]
-          );
-      }
-  }
+        let variables: Vec<String> = operation
+            .variable_definitions()
+            .iter()
+            .flat_map(|definitions| definitions.variable_definitions())
+            .filter_map(|definition| Some(definition.variable()?.text().to_string()))
+            .collect();
+
+        assert_eq!(
+            variables.as_slice(),
+            ["graph_id".to_string(), "variant".to_string()]
+        );
+    }
+}
 ```
 
-## License
-Licensed under either of
+## Rust Versions
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+`oxc-graphql-parser` is tested on the latest stable version of Rust.
+Older versions may or may not be compatible.
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
 
-[oxc-graphql-parser: spec-compliant GraphQL Tools in Rust]: https://github.com/oxc-project/oxc-graphql-parser/
 [examples directory]: https://github.com/oxc-project/oxc-graphql-parser/tree/main/crates/oxc_graphql_parser/examples
-[Get field names in an object]: https://github.com/oxc-project/oxc-graphql-parser#get-field-names-in-an-object
-[Get variables used in a query]: https://github.com/oxc-project/oxc-graphql-parser#get-variables-used-in-a-query
-[using oxc-graphql-parser with miette to display error diagnostics]: https://github.com/oxc-project/oxc-graphql-parser/blob/main/crates/oxc_graphql_parser/examples/miette.rs
+[using oxc-graphql-parser with ariadne to display error diagnostics]: https://github.com/oxc-project/oxc-graphql-parser/blob/main/crates/oxc_graphql_parser/examples/ariadne.rs
 [using oxc-graphql-parser with annotate_snippets to display error diagnostics]: https://github.com/oxc-project/oxc-graphql-parser/blob/main/crates/oxc_graphql_parser/examples/annotate_snippet.rs
 [checking for unused variables]: https://github.com/oxc-project/oxc-graphql-parser/blob/main/crates/oxc_graphql_parser/examples/unused_vars.rs
 [October 2021 specification]: https://spec.graphql.org/October2021
