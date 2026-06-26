@@ -1,6 +1,6 @@
 use criterion::*;
 use oxc_graphql_parser::Lexer;
-use oxc_graphql_parser::cst;
+use oxc_graphql_parser::ast;
 
 fn parse_query(query: &str) {
     let parser = oxc_graphql_parser::Parser::new(query);
@@ -12,14 +12,13 @@ fn parse_query(query: &str) {
     let document = tree.document();
 
     // Simulate a basic selection set traversal operation.
-    for definition in document.definitions() {
-        if let cst::Definition::OperationDefinition(operation) = definition {
-            let selection_set = operation
-                .selection_set()
-                .expect("the node SelectionSet is not optional in the spec; qed");
-            for selection in selection_set.selections() {
-                if let cst::Selection::Field(field) = selection {
-                    std::hint::black_box(field.selection_set());
+    for definition in &document.definitions {
+        if let ast::Definition::Operation(operation) = definition
+            && let Some(selection_set) = &operation.selection_set
+        {
+            for selection in &selection_set.selections {
+                if let ast::Selection::Field(field) = selection {
+                    std::hint::black_box(&field.selection_set);
                 }
             }
         }

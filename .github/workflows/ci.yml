@@ -45,7 +45,7 @@ jobs:
       - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         with:
           save-cache: ${{ github.ref_name == 'main' }}
-          components: rustfmt # for `cargo xtask codegen`
+          components: rustfmt
       - run: cargo check --workspace --all-targets --all-features
       - run: cargo test --workspace
 

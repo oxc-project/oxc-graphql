@@ -11,11 +11,11 @@ use annotate_snippets::Level;
 use annotate_snippets::Renderer;
 use annotate_snippets::Snippet;
 use oxc_graphql_parser::Parser;
-use oxc_graphql_parser::cst;
+use oxc_graphql_parser::ast;
 use std::fs;
 use std::path::Path;
 
-fn parse_schema() -> cst::Document {
+fn parse_schema() -> ast::Document {
     let file = Path::new("crates/oxc_graphql_parser/examples/schema_with_errors.graphql");
     let src = fs::read_to_string(file).expect("Could not read schema file.");
     // this is a nice to have for errors for displaying error origin.
@@ -25,12 +25,12 @@ fn parse_schema() -> cst::Document {
         .to_str()
         .expect("Could not get &str from file name.");
     let parser = Parser::new(&src);
-    let cst = parser.parse();
+    let ast = parser.parse();
 
     // each err comes with the two pieces of data you need for diagnostics:
     // - message (err.message())
     // - index (err.index())
-    for err in cst.errors() {
+    for err in ast.errors() {
         let snippet = Level::ERROR.primary_title(err.message()).element(
             Snippet::source(&src).line_start(0).path(file_name).fold(true).annotation(
                 AnnotationKind::Primary
@@ -43,7 +43,7 @@ fn parse_schema() -> cst::Document {
         println!("{}\n\n", renderer.render(&[snippet]));
     }
 
-    cst.document()
+    ast.into_root()
 }
 
 fn main() {

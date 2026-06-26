@@ -1,0 +1,1460 @@
+use crate::ast::*;
+use crate::lexer::Lexer;
+use crate::{Error, LimitTracker, T, Token, TokenKind};
+use std::ops::ControlFlow;
+
+#[derive(Debug)]
+pub struct Parser<'input> {
+    input: &'input str,
+    lexer: Lexer<'input>,
+    current_token: Option<Token<'input>>,
+    errors: Vec<Error>,
+    recursion_limit: LimitTracker,
+    accept_errors: bool,
+    allow_executable_descriptions: bool,
+    allow_legacy_fragment_variables: bool,
+    last_end: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Constness {
+    Const,
+    NotConst,
+}
+
+const DEFAULT_RECURSION_LIMIT: usize = 500;
+
+impl<'input> Parser<'input> {
+    pub fn new(input: &'input str) -> Self {
+        Self {
+            input,
+            lexer: Lexer::new(input),
+            current_token: None,
+            errors: Vec::new(),
+            recursion_limit: LimitTracker::new(DEFAULT_RECURSION_LIMIT),
+            accept_errors: true,
+            allow_executable_descriptions: false,
+            allow_legacy_fragment_variables: false,
+            last_end: 0,
+        }
+    }
+
+    pub fn recursion_limit(mut self, recursion_limit: usize) -> Self {
+        self.recursion_limit = LimitTracker::new(recursion_limit);
+        self
+    }
+
+    pub fn token_limit(mut self, token_limit: usize) -> Self {
+        self.lexer = self.lexer.with_limit(token_limit);
+        self
+    }
+
+    pub fn allow_executable_descriptions(mut self, allow: bool) -> Self {
+        self.allow_executable_descriptions = allow;
+        self
+    }
+
+    pub fn allow_legacy_fragment_variables(mut self, allow: bool) -> Self {
+        self.allow_legacy_fragment_variables = allow;
+        self
+    }
+
+    pub fn parse(mut self) -> Ast<Document> {
+        let document = self.parse_document();
+        let token_limit = self.lexer.limit_tracker;
+        Ast::new(self.input, document, self.errors, self.recursion_limit, token_limit)
+    }
+
+    pub fn parse_selection_set(mut self) -> Ast<SelectionSet> {
+        let selection_set = self.parse_selection_set_inner();
+        let token_limit = self.lexer.limit_tracker;
+        Ast::new(self.input, selection_set, self.errors, self.recursion_limit, token_limit)
+    }
+
+    pub fn parse_type(mut self) -> Ast<Type> {
+        let ty = self.parse_type_inner().unwrap_or_else(|| {
+            let span = self.current_span();
+            self.err("expected a type");
+            Type::Missing(span)
+        });
+        let token_limit = self.lexer.limit_tracker;
+        Ast::new(self.input, ty, self.errors, self.recursion_limit, token_limit)
+    }
+
+    fn parse_document(&mut self) -> Document {
+        let start = self.current_start();
+        let mut definitions = Vec::new();
+
+        if self.peek().is_none_or(|kind| kind == TokenKind::Eof) {
+            self.err("Unexpected <EOF>.");
+        }
+
+        self.peek_while(|parser, kind| {
+            if kind == TokenKind::Eof {
+                return ControlFlow::Break(());
+            }
+
+            let before = parser.current_span();
+            if let Some(definition) = parser.parse_definition() {
+                definitions.push(definition);
+            } else {
+                parser.err_and_pop("expected a StringValue, Name or OperationDefinition");
+            }
+
+            if parser.current_span() == before && parser.peek() != Some(TokenKind::Eof) {
+                parser.bump();
+            }
+
+            ControlFlow::Continue(())
+        });
+
+        Document { definitions, span: self.span_from(start) }
+    }
+
+    fn parse_definition(&mut self) -> Option<Definition> {
+        let description = self.parse_description_if_present();
+        let selector = match description {
+            Some(_) => self.peek_data().map(str::to_string),
+            None => self.peek_data().map(str::to_string),
+        }?;
+
+        let definition = match selector.as_str() {
+            "directive" => Definition::Directive(self.parse_directive_definition(description)),
+            "enum" => Definition::EnumType(self.parse_enum_type_definition(description)),
+            "extend" => return self.parse_extension(),
+            "fragment" => Definition::Fragment(self.parse_fragment_definition(description)),
+            "input" => {
+                Definition::InputObjectType(self.parse_input_object_type_definition(description))
+            }
+            "interface" => {
+                Definition::InterfaceType(self.parse_interface_type_definition(description))
+            }
+            "type" => Definition::ObjectType(self.parse_object_type_definition(description)),
+            "query" | "mutation" | "subscription" | "{" => {
+                Definition::Operation(self.parse_operation_definition(description))
+            }
+            "scalar" => Definition::ScalarType(self.parse_scalar_type_definition(description)),
+            "schema" => Definition::Schema(self.parse_schema_definition(description)),
+            "union" => Definition::UnionType(self.parse_union_type_definition(description)),
+            _ => {
+                if description.is_some() {
+                    self.err("expected a definition after this StringValue");
+                } else {
+                    self.err_and_pop("expected definition");
+                }
+                return None;
+            }
+        };
+
+        Some(definition)
+    }
+
+    fn parse_extension(&mut self) -> Option<Definition> {
+        let start = self.current_start();
+        self.expect_name_value("extend");
+
+        let definition = match self.peek_data() {
+            Some("schema") => Definition::SchemaExtension(self.parse_schema_extension_from(start)),
+            Some("scalar") => {
+                Definition::ScalarTypeExtension(self.parse_scalar_type_extension_from(start))
+            }
+            Some("type") => {
+                Definition::ObjectTypeExtension(self.parse_object_type_extension_from(start))
+            }
+            Some("interface") => {
+                Definition::InterfaceTypeExtension(self.parse_interface_type_extension_from(start))
+            }
+            Some("union") => {
+                Definition::UnionTypeExtension(self.parse_union_type_extension_from(start))
+            }
+            Some("enum") => {
+                Definition::EnumTypeExtension(self.parse_enum_type_extension_from(start))
+            }
+            Some("input") => Definition::InputObjectTypeExtension(
+                self.parse_input_object_type_extension_from(start),
+            ),
+            _ => {
+                self.err("expected a valid extension");
+                return None;
+            }
+        };
+
+        Some(definition)
+    }
+
+    fn parse_operation_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> OperationDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+
+        if self.peek() == Some(T!['{']) {
+            let selection_set = Some(self.parse_selection_set_inner());
+            return OperationDefinition {
+                description,
+                operation_type: OperationType::Query,
+                name: None,
+                variable_definitions: Vec::new(),
+                directives: Vec::new(),
+                selection_set,
+                span: self.span_from(start),
+            };
+        }
+
+        let operation_type = match self.peek_data() {
+            Some("query") => {
+                self.bump();
+                OperationType::Query
+            }
+            Some("mutation") => {
+                self.bump();
+                OperationType::Mutation
+            }
+            Some("subscription") => {
+                self.bump();
+                OperationType::Subscription
+            }
+            _ => {
+                self.err("expected Operation Type");
+                OperationType::Query
+            }
+        };
+
+        let name = if self.peek() == Some(TokenKind::Name) { self.parse_name() } else { None };
+        let variable_definitions = self.parse_variable_definitions_if_present();
+        let directives = self.parse_directives(Constness::NotConst);
+        let selection_set = if self.peek() == Some(T!['{']) {
+            Some(self.parse_selection_set_inner())
+        } else {
+            self.err("expected a Selection Set");
+            None
+        };
+
+        OperationDefinition {
+            description,
+            operation_type,
+            name,
+            variable_definitions,
+            directives,
+            selection_set,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_fragment_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> FragmentDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("fragment");
+
+        let variable_definitions =
+            if self.allow_legacy_fragment_variables && self.peek() == Some(T!['(']) {
+                self.parse_variable_definitions_if_present()
+            } else {
+                Vec::new()
+            };
+
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment"));
+        self.expect_name_value("on");
+        let type_condition = self.parse_named_type().unwrap_or_else(|| self.missing_named_type());
+        let directives = self.parse_directives(Constness::NotConst);
+        let selection_set = if self.peek() == Some(T!['{']) {
+            Some(self.parse_selection_set_inner())
+        } else {
+            self.err("expected a Selection Set");
+            None
+        };
+
+        FragmentDefinition {
+            description,
+            name,
+            variable_definitions,
+            type_condition,
+            directives,
+            selection_set,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_selection_set_inner(&mut self) -> SelectionSet {
+        let start = self.current_start();
+        self.expect(T!['{'], "expected {");
+        let mut selections = Vec::new();
+
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                if selections.is_empty() {
+                    parser.err("expected Selection");
+                }
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ if parser.recursion_limit.check_and_increment() => {
+                parser.limit_err("parser recursion limit reached");
+                ControlFlow::Break(())
+            }
+            _ => {
+                selections.push(parser.parse_selection());
+                parser.recursion_limit.decrement();
+                ControlFlow::Continue(())
+            }
+        });
+
+        SelectionSet { selections, span: self.span_from(start) }
+    }
+
+    fn parse_selection(&mut self) -> Selection {
+        if self.peek() == Some(T![...]) {
+            self.parse_fragment_selection()
+        } else {
+            Selection::Field(self.parse_field())
+        }
+    }
+
+    fn parse_fragment_selection(&mut self) -> Selection {
+        let start = self.current_start();
+        self.expect(T![...], "expected ...");
+
+        if self.peek_data() == Some("on") {
+            self.bump();
+            let type_condition = self.parse_named_type();
+            let directives = self.parse_directives(Constness::NotConst);
+            let selection_set = if self.peek() == Some(T!['{']) {
+                Some(self.parse_selection_set_inner())
+            } else {
+                self.err("expected a Selection Set");
+                None
+            };
+            return Selection::InlineFragment(InlineFragment {
+                type_condition,
+                directives,
+                selection_set,
+                span: self.span_from(start),
+            });
+        }
+
+        if matches!(self.peek(), Some(T![@] | T!['{'])) {
+            let directives = self.parse_directives(Constness::NotConst);
+            let selection_set = if self.peek() == Some(T!['{']) {
+                Some(self.parse_selection_set_inner())
+            } else {
+                self.err("expected a Selection Set");
+                None
+            };
+            return Selection::InlineFragment(InlineFragment {
+                type_condition: None,
+                directives,
+                selection_set,
+                span: self.span_from(start),
+            });
+        }
+
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment spread"));
+        let directives = self.parse_directives(Constness::NotConst);
+        Selection::FragmentSpread(FragmentSpread { name, directives, span: self.span_from(start) })
+    }
+
+    fn parse_field(&mut self) -> Field {
+        let start = self.current_start();
+        let first_name = self.parse_name().unwrap_or_else(|| self.missing_name("field"));
+        let (alias, name) = if self.peek() == Some(T![:]) {
+            self.bump();
+            let name = self.parse_name().unwrap_or_else(|| self.missing_name("field"));
+            (Some(first_name), name)
+        } else {
+            (None, first_name)
+        };
+
+        let arguments = self.parse_arguments_if_present(Constness::NotConst);
+        let directives = self.parse_directives(Constness::NotConst);
+        let selection_set = if self.peek() == Some(T!['{']) {
+            Some(self.parse_selection_set_inner())
+        } else {
+            None
+        };
+
+        Field { alias, name, arguments, directives, selection_set, span: self.span_from(start) }
+    }
+
+    fn parse_arguments_if_present(&mut self, constness: Constness) -> Vec<Argument> {
+        if self.peek() != Some(T!['(']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut arguments = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T![')'] => {
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name => {
+                arguments.push(parser.parse_argument(constness));
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected )");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected an Argument");
+                ControlFlow::Continue(())
+            }
+        });
+        arguments
+    }
+
+    fn parse_argument(&mut self, constness: Constness) -> Argument {
+        let start = self.current_start();
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("argument"));
+        let value = if self.peek() == Some(T![:]) {
+            self.bump();
+            Some(self.parse_value(constness, false))
+        } else {
+            self.err("expected :");
+            None
+        };
+        Argument { name, value, span: self.span_from(start) }
+    }
+
+    fn parse_variable_definitions_if_present(&mut self) -> Vec<VariableDefinition> {
+        if self.peek() != Some(T!['(']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut definitions = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T![')'] => {
+                if definitions.is_empty() {
+                    parser.err("expected a Variable Definition");
+                }
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            T![$] | TokenKind::StringValue => {
+                definitions.push(parser.parse_variable_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected )");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected a Variable Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        definitions
+    }
+
+    fn parse_variable_definition(&mut self) -> VariableDefinition {
+        let start = self.current_start();
+        let description = if self.allow_executable_descriptions {
+            self.parse_description_if_present()
+        } else {
+            None
+        };
+        let variable = self.parse_variable().unwrap_or_else(|| self.missing_variable());
+        let mut ty = None;
+        let mut default_value = None;
+        let mut directives = Vec::new();
+
+        if self.peek() == Some(T![:]) {
+            self.bump();
+            ty = self.parse_type_inner();
+            if self.peek() == Some(T![=]) {
+                self.bump();
+                default_value = Some(self.parse_value(Constness::Const, false));
+            }
+            directives = self.parse_directives(Constness::Const);
+        } else {
+            self.err("expected a Name");
+        }
+
+        VariableDefinition {
+            description,
+            variable,
+            ty,
+            default_value,
+            directives,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_variable(&mut self) -> Option<Variable> {
+        let start = self.current_start();
+        if self.peek() != Some(T![$]) {
+            self.err("expected a Variable");
+            return None;
+        }
+        self.bump();
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("variable"));
+        Some(Variable { name, span: self.span_from(start) })
+    }
+
+    fn parse_directives(&mut self, constness: Constness) -> Vec<Directive> {
+        let mut directives = Vec::new();
+        while self.peek() == Some(T![@]) {
+            directives.push(self.parse_directive(constness));
+        }
+        directives
+    }
+
+    fn parse_directive(&mut self, constness: Constness) -> Directive {
+        let start = self.current_start();
+        self.expect(T![@], "expected @ symbol");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("directive"));
+        let arguments = self.parse_arguments_if_present(constness);
+        Directive { name, arguments, span: self.span_from(start) }
+    }
+
+    fn parse_value(&mut self, constness: Constness, pop_on_error: bool) -> Value {
+        match self.peek() {
+            Some(T![$]) => {
+                if matches!(constness, Constness::Const) {
+                    self.err("unexpected variable value in a Const context");
+                }
+                self.parse_variable()
+                    .map_or_else(|| Value::Missing(self.current_span()), Value::Variable)
+            }
+            Some(TokenKind::Int) => self.parse_int_value(),
+            Some(TokenKind::Float) => self.parse_float_value(),
+            Some(TokenKind::StringValue) => self
+                .parse_string_value()
+                .map_or_else(|| Value::Missing(self.current_span()), Value::String),
+            Some(TokenKind::Name) => self.parse_name_value(),
+            Some(T!['[']) => self.parse_list_value(constness),
+            Some(T!['{']) => self.parse_object_value(constness),
+            _ => {
+                let message = "expected a valid Value";
+                if pop_on_error {
+                    self.err_and_pop(message);
+                } else {
+                    self.err(message);
+                }
+                Value::Missing(self.current_span())
+            }
+        }
+    }
+
+    fn parse_int_value(&mut self) -> Value {
+        let token = self.bump().expect("peeked int token must be available");
+        Value::Int(IntValue {
+            raw: token.data().to_string(),
+            span: Span::new(token.index(), token.index() + token.data().len()),
+        })
+    }
+
+    fn parse_float_value(&mut self) -> Value {
+        let token = self.bump().expect("peeked float token must be available");
+        Value::Float(FloatValue {
+            raw: token.data().to_string(),
+            span: Span::new(token.index(), token.index() + token.data().len()),
+        })
+    }
+
+    fn parse_name_value(&mut self) -> Value {
+        let Some(name) = self.parse_name() else {
+            return Value::Missing(self.current_span());
+        };
+        match name.value.as_str() {
+            "true" => Value::Boolean(BooleanValue { value: true, span: name.span }),
+            "false" => Value::Boolean(BooleanValue { value: false, span: name.span }),
+            "null" => Value::Null(NullValue { span: name.span }),
+            _ => Value::Enum(EnumValue { name }),
+        }
+    }
+
+    fn parse_list_value(&mut self, constness: Constness) -> Value {
+        let start = self.current_start();
+        self.expect(T!['['], "expected [");
+        let mut values = Vec::new();
+
+        self.peek_while(|parser, kind| match kind {
+            T![']'] => {
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected ]");
+                ControlFlow::Break(())
+            }
+            _ if parser.recursion_limit.check_and_increment() => {
+                parser.limit_err("parser recursion limit reached");
+                ControlFlow::Break(())
+            }
+            _ => {
+                values.push(parser.parse_value(constness, true));
+                parser.recursion_limit.decrement();
+                ControlFlow::Continue(())
+            }
+        });
+
+        Value::List(ListValue { values, span: self.span_from(start) })
+    }
+
+    fn parse_object_value(&mut self, constness: Constness) -> Value {
+        let start = self.current_start();
+        self.expect(T!['{'], "expected {");
+        let mut fields = Vec::new();
+
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name => {
+                fields.push(parser.parse_object_field(constness));
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected Object Field");
+                ControlFlow::Continue(())
+            }
+        });
+
+        Value::Object(ObjectValue { fields, span: self.span_from(start) })
+    }
+
+    fn parse_object_field(&mut self, constness: Constness) -> ObjectField {
+        let start = self.current_start();
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("object field"));
+        let value = if self.peek() == Some(T![:]) {
+            self.bump();
+            Some(self.parse_value(constness, true))
+        } else {
+            self.err("expected :");
+            None
+        };
+        ObjectField { name, value, span: self.span_from(start) }
+    }
+
+    fn parse_type_inner(&mut self) -> Option<Type> {
+        let start = self.current_start();
+        let mut ty = match self.peek() {
+            Some(T!['[']) => {
+                self.bump();
+                if self.recursion_limit.check_and_increment() {
+                    self.limit_err("parser recursion limit reached");
+                    return Some(Type::Missing(self.span_from(start)));
+                }
+                let inner = self.parse_type_inner().unwrap_or(Type::Missing(self.current_span()));
+                self.recursion_limit.decrement();
+                self.expect(T![']'], "expected ]");
+                Type::List(ListType { ty: Box::new(inner), span: self.span_from(start) })
+            }
+            Some(TokenKind::Name) => {
+                let name = self.parse_name().unwrap_or_else(|| self.missing_name("type"));
+                Type::Named(NamedType { name })
+            }
+            Some(_) => {
+                self.err("expected a type");
+                return None;
+            }
+            None => return None,
+        };
+
+        if self.peek() == Some(T![!]) {
+            self.bump();
+            ty = Type::NonNull(NonNullType { ty: Box::new(ty), span: self.span_from(start) });
+        }
+
+        Some(ty)
+    }
+
+    fn parse_named_type(&mut self) -> Option<NamedType> {
+        self.parse_name().map(|name| NamedType { name })
+    }
+
+    fn parse_schema_definition(&mut self, description: Option<StringValue>) -> SchemaDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("schema");
+        let directives = self.parse_directives(Constness::Const);
+        let root_operations = self.parse_root_operation_types_if_present();
+        SchemaDefinition { description, directives, root_operations, span: self.span_from(start) }
+    }
+
+    fn parse_schema_extension_from(&mut self, start: usize) -> SchemaExtension {
+        self.expect_name_value("schema");
+        let directives = self.parse_directives(Constness::Const);
+        let root_operations = self.parse_root_operation_types_if_present();
+        if directives.is_empty() && root_operations.is_empty() {
+            self.err("expected Directives or Root Operation Types");
+        }
+        SchemaExtension { directives, root_operations, span: self.span_from(start) }
+    }
+
+    fn parse_root_operation_types_if_present(&mut self) -> Vec<RootOperationTypeDefinition> {
+        if self.peek() != Some(T!['{']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut root_operations = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name => {
+                root_operations.push(parser.parse_root_operation_type_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected Root Operation Type Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        root_operations
+    }
+
+    fn parse_root_operation_type_definition(&mut self) -> RootOperationTypeDefinition {
+        let start = self.current_start();
+        let operation_type = match self.peek_data() {
+            Some("query") => {
+                self.bump();
+                OperationType::Query
+            }
+            Some("mutation") => {
+                self.bump();
+                OperationType::Mutation
+            }
+            Some("subscription") => {
+                self.bump();
+                OperationType::Subscription
+            }
+            _ => {
+                self.err("expected an Operation Type");
+                OperationType::Query
+            }
+        };
+        self.expect(T![:], "expected :");
+        let named_type = self.parse_named_type().unwrap_or_else(|| self.missing_named_type());
+        RootOperationTypeDefinition { operation_type, named_type, span: self.span_from(start) }
+    }
+
+    fn parse_directive_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> DirectiveDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("directive");
+        self.expect(T![@], "expected @ symbol");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("directive"));
+        let arguments = self.parse_arguments_definition_if_present();
+        let repeatable = if self.peek_data() == Some("repeatable") {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        self.expect_name_value("on");
+        let locations = self.parse_directive_locations();
+
+        DirectiveDefinition {
+            description,
+            name,
+            arguments,
+            repeatable,
+            locations,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_directive_locations(&mut self) -> Vec<DirectiveLocation> {
+        if self.peek() == Some(T![|]) {
+            self.bump();
+        }
+
+        let mut locations = Vec::new();
+        loop {
+            if let Some(token) = self.peek_token().cloned()
+                && token.kind() == TokenKind::Name
+            {
+                self.bump();
+                locations.push(DirectiveLocation {
+                    name: token.data().to_string(),
+                    span: Span::new(token.index(), token.index() + token.data().len()),
+                });
+            } else {
+                self.err("expected valid Directive Location");
+                break;
+            }
+
+            if self.peek() == Some(T![|]) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        locations
+    }
+
+    fn parse_scalar_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> ScalarTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("scalar");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("scalar"));
+        let directives = self.parse_directives(Constness::Const);
+        ScalarTypeDefinition { description, name, directives, span: self.span_from(start) }
+    }
+
+    fn parse_scalar_type_extension_from(&mut self, start: usize) -> ScalarTypeExtension {
+        self.expect_name_value("scalar");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("scalar"));
+        let directives = self.parse_directives(Constness::Const);
+        if directives.is_empty() {
+            self.err("expected Directives");
+        }
+        ScalarTypeExtension { name, directives, span: self.span_from(start) }
+    }
+
+    fn parse_object_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> ObjectTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("type");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("object type"));
+        let interfaces = self.parse_implements_interfaces();
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_fields_definition_if_present();
+        ObjectTypeDefinition {
+            description,
+            name,
+            interfaces,
+            directives,
+            fields,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_object_type_extension_from(&mut self, start: usize) -> ObjectTypeExtension {
+        self.expect_name_value("type");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("object type"));
+        let interfaces = self.parse_implements_interfaces();
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_fields_definition_if_present();
+        if interfaces.is_empty() && directives.is_empty() && fields.is_empty() {
+            self.err("expected Implements Interfaces, Directives, or Fields Definition");
+        }
+        ObjectTypeExtension { name, interfaces, directives, fields, span: self.span_from(start) }
+    }
+
+    fn parse_interface_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> InterfaceTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("interface");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("interface"));
+        let interfaces = self.parse_implements_interfaces();
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_fields_definition_if_present();
+        InterfaceTypeDefinition {
+            description,
+            name,
+            interfaces,
+            directives,
+            fields,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_interface_type_extension_from(&mut self, start: usize) -> InterfaceTypeExtension {
+        self.expect_name_value("interface");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("interface"));
+        let interfaces = self.parse_implements_interfaces();
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_fields_definition_if_present();
+        if interfaces.is_empty() && directives.is_empty() && fields.is_empty() {
+            self.err("expected an Implements Interfaces, Directives, or a Fields Definition");
+        }
+        InterfaceTypeExtension { name, interfaces, directives, fields, span: self.span_from(start) }
+    }
+
+    fn parse_implements_interfaces(&mut self) -> Vec<NamedType> {
+        if self.peek_data() != Some("implements") {
+            return Vec::new();
+        }
+
+        self.bump();
+        if self.peek() == Some(T![&]) {
+            self.bump();
+        }
+
+        let mut interfaces = Vec::new();
+        loop {
+            if let Some(named_type) = self.parse_named_type() {
+                interfaces.push(named_type);
+            } else {
+                self.err("expected Implements Interface");
+                break;
+            }
+
+            if self.peek() == Some(T![&]) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        interfaces
+    }
+
+    fn parse_fields_definition_if_present(&mut self) -> Vec<FieldDefinition> {
+        if self.peek() != Some(T!['{']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut fields = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                if fields.is_empty() {
+                    parser.err("expected Field Definition");
+                }
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name | TokenKind::StringValue => {
+                fields.push(parser.parse_field_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected a Field Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        fields
+    }
+
+    fn parse_field_definition(&mut self) -> FieldDefinition {
+        let start = self.current_start();
+        let description = self.parse_description_if_present();
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("field definition"));
+        let arguments = self.parse_arguments_definition_if_present();
+        let ty = if self.peek() == Some(T![:]) {
+            self.bump();
+            self.parse_type_inner()
+        } else {
+            self.err("expected a Type");
+            None
+        };
+        let directives = self.parse_directives(Constness::Const);
+        FieldDefinition {
+            description,
+            name,
+            arguments,
+            ty,
+            directives,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_arguments_definition_if_present(&mut self) -> Vec<InputValueDefinition> {
+        if self.peek() != Some(T!['(']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut definitions = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T![')'] => {
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name | TokenKind::StringValue => {
+                definitions.push(parser.parse_input_value_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected )");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected an Argument Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        definitions
+    }
+
+    fn parse_input_value_definition(&mut self) -> InputValueDefinition {
+        let start = self.current_start();
+        let description = self.parse_description_if_present();
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("input value"));
+        let ty = if self.peek() == Some(T![:]) {
+            self.bump();
+            self.parse_type_inner()
+        } else {
+            self.err("expected a Type");
+            None
+        };
+        let default_value = if self.peek() == Some(T![=]) {
+            self.bump();
+            Some(self.parse_value(Constness::Const, false))
+        } else {
+            None
+        };
+        let directives = self.parse_directives(Constness::Const);
+        InputValueDefinition {
+            description,
+            name,
+            ty,
+            default_value,
+            directives,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_union_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> UnionTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("union");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("union"));
+        let directives = self.parse_directives(Constness::Const);
+        let members = self.parse_union_members_if_present();
+        UnionTypeDefinition { description, name, directives, members, span: self.span_from(start) }
+    }
+
+    fn parse_union_type_extension_from(&mut self, start: usize) -> UnionTypeExtension {
+        self.expect_name_value("union");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("union"));
+        let directives = self.parse_directives(Constness::Const);
+        let members = self.parse_union_members_if_present();
+        if directives.is_empty() && members.is_empty() {
+            self.err("expected Directives or Union Member Types");
+        }
+        UnionTypeExtension { name, directives, members, span: self.span_from(start) }
+    }
+
+    fn parse_union_members_if_present(&mut self) -> Vec<NamedType> {
+        if self.peek() != Some(T![=]) {
+            return Vec::new();
+        }
+
+        self.bump();
+        if self.peek() == Some(T![|]) {
+            self.bump();
+        }
+
+        let mut members = Vec::new();
+        loop {
+            if let Some(member) = self.parse_named_type() {
+                members.push(member);
+            } else {
+                self.err("expected Union Member Type");
+                break;
+            }
+
+            if self.peek() == Some(T![|]) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        members
+    }
+
+    fn parse_enum_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> EnumTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("enum");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("enum"));
+        let directives = self.parse_directives(Constness::Const);
+        let values = self.parse_enum_values_definition_if_present();
+        EnumTypeDefinition { description, name, directives, values, span: self.span_from(start) }
+    }
+
+    fn parse_enum_type_extension_from(&mut self, start: usize) -> EnumTypeExtension {
+        self.expect_name_value("enum");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("enum"));
+        let directives = self.parse_directives(Constness::Const);
+        let values = self.parse_enum_values_definition_if_present();
+        if directives.is_empty() && values.is_empty() {
+            self.err("expected Directives or Enum Values Definition");
+        }
+        EnumTypeExtension { name, directives, values, span: self.span_from(start) }
+    }
+
+    fn parse_enum_values_definition_if_present(&mut self) -> Vec<EnumValueDefinition> {
+        if self.peek() != Some(T!['{']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut values = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                if values.is_empty() {
+                    parser.err("expected Enum Value Definition");
+                }
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name | TokenKind::StringValue => {
+                values.push(parser.parse_enum_value_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected an Enum Value Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        values
+    }
+
+    fn parse_enum_value_definition(&mut self) -> EnumValueDefinition {
+        let start = self.current_start();
+        let description = self.parse_description_if_present();
+        let value = EnumValue {
+            name: self.parse_name().unwrap_or_else(|| self.missing_name("enum value")),
+        };
+        if matches!(value.name.as_str(), "true" | "false" | "null") {
+            self.err("invalid Enum Value");
+        }
+        let directives = self.parse_directives(Constness::Const);
+        EnumValueDefinition { description, value, directives, span: self.span_from(start) }
+    }
+
+    fn parse_input_object_type_definition(
+        &mut self,
+        description: Option<StringValue>,
+    ) -> InputObjectTypeDefinition {
+        let start =
+            description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
+        self.expect_name_value("input");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("input object"));
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_input_fields_definition_if_present();
+        InputObjectTypeDefinition {
+            description,
+            name,
+            directives,
+            fields,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_input_object_type_extension_from(&mut self, start: usize) -> InputObjectTypeExtension {
+        self.expect_name_value("input");
+        let name = self.parse_name().unwrap_or_else(|| self.missing_name("input object"));
+        let directives = self.parse_directives(Constness::Const);
+        let fields = self.parse_input_fields_definition_if_present();
+        if directives.is_empty() && fields.is_empty() {
+            self.err("expected Directives or Input Fields Definition");
+        }
+        InputObjectTypeExtension { name, directives, fields, span: self.span_from(start) }
+    }
+
+    fn parse_input_fields_definition_if_present(&mut self) -> Vec<InputValueDefinition> {
+        if self.peek() != Some(T!['{']) {
+            return Vec::new();
+        }
+
+        self.bump();
+        let mut fields = Vec::new();
+        self.peek_while(|parser, kind| match kind {
+            T!['}'] => {
+                if fields.is_empty() {
+                    parser.err("expected an Input Value Definition");
+                }
+                parser.bump();
+                ControlFlow::Break(())
+            }
+            TokenKind::Name | TokenKind::StringValue => {
+                fields.push(parser.parse_input_value_definition());
+                ControlFlow::Continue(())
+            }
+            TokenKind::Eof => {
+                parser.err("expected }");
+                ControlFlow::Break(())
+            }
+            _ => {
+                parser.err_and_pop("expected an Input Value Definition");
+                ControlFlow::Continue(())
+            }
+        });
+        fields
+    }
+
+    fn parse_description_if_present(&mut self) -> Option<StringValue> {
+        if self.peek() == Some(TokenKind::StringValue) { self.parse_string_value() } else { None }
+    }
+
+    fn parse_string_value(&mut self) -> Option<StringValue> {
+        let token = self.bump()?;
+        let raw = token.data().to_string();
+        let block = raw.starts_with(r#"""""#);
+        let value = if block {
+            normalize_block_string(&raw)
+        } else {
+            unescape_string(raw.trim_matches('"'))
+        };
+        Some(StringValue {
+            raw,
+            value,
+            block,
+            span: Span::new(token.index(), token.index() + token.data().len()),
+        })
+    }
+
+    fn parse_name(&mut self) -> Option<Name> {
+        let token = self.peek_token().cloned()?;
+        if token.kind() != TokenKind::Name {
+            self.err("expected a Name");
+            return None;
+        }
+        self.bump();
+        Some(Name {
+            value: token.data().to_string(),
+            span: Span::new(token.index(), token.index() + token.data().len()),
+        })
+    }
+
+    fn expect_name_value(&mut self, expected: &str) {
+        if self.peek_data() == Some(expected) {
+            self.bump();
+        } else {
+            self.err(&format!("expected {expected}"));
+        }
+    }
+
+    fn expect(&mut self, token: TokenKind, message: &str) {
+        if self.peek() == Some(token) {
+            self.bump();
+        } else {
+            self.err(message);
+        }
+    }
+
+    fn missing_name(&self, context: &str) -> Name {
+        Name { value: String::new(), span: Span::new(self.last_end, self.last_end) }
+            .with_context(context)
+    }
+
+    fn missing_named_type(&self) -> NamedType {
+        NamedType { name: self.missing_name("type") }
+    }
+
+    fn missing_variable(&self) -> Variable {
+        Variable {
+            name: self.missing_name("variable"),
+            span: Span::new(self.last_end, self.last_end),
+        }
+    }
+
+    fn limit_err<S: Into<String>>(&mut self, message: S) {
+        let index = if let Some(token) = self.peek_token() { token.index() } else { self.last_end };
+        self.push_err(Error::limit(message, index));
+        self.accept_errors = false;
+    }
+
+    fn err(&mut self, message: &str) {
+        let Some(token) = self.peek_token().cloned() else {
+            return;
+        };
+        let err = if token.kind() == TokenKind::Eof {
+            Error::eof(message, token.index())
+        } else {
+            Error::with_loc(message, token.data().to_string(), token.index())
+        };
+        self.push_err(err);
+    }
+
+    fn err_and_pop(&mut self, message: &str) {
+        let Some(token) = self.bump() else {
+            return;
+        };
+        let err = if token.kind() == TokenKind::Eof {
+            Error::eof(message, token.index())
+        } else {
+            Error::with_loc(message, token.data().to_string(), token.index())
+        };
+        self.push_err(err);
+    }
+
+    fn push_err(&mut self, err: Error) {
+        if self.accept_errors {
+            self.errors.push(err);
+        }
+    }
+
+    fn peek_while(
+        &mut self,
+        mut run: impl FnMut(&mut Parser<'input>, TokenKind) -> ControlFlow<()>,
+    ) {
+        while let Some(kind) = self.peek() {
+            let before = self.current_token.clone();
+            match run(self, kind) {
+                ControlFlow::Break(()) => break,
+                ControlFlow::Continue(()) => {
+                    debug_assert!(
+                        before != self.current_token,
+                        "peek_while() iteration must advance parsing"
+                    );
+                }
+            }
+        }
+    }
+
+    fn peek(&mut self) -> Option<TokenKind> {
+        self.peek_token().map(Token::kind)
+    }
+
+    fn peek_data(&mut self) -> Option<&'input str> {
+        self.peek_token().map(Token::data)
+    }
+
+    fn peek_token(&mut self) -> Option<&Token<'input>> {
+        if self.current_token.is_none() {
+            self.current_token = self.next_significant_token();
+        }
+        self.current_token.as_ref()
+    }
+
+    fn bump(&mut self) -> Option<Token<'input>> {
+        let token = if let Some(token) = self.current_token.take() {
+            token
+        } else {
+            self.next_significant_token()?
+        };
+        self.last_end = token.index() + token.data().len();
+        Some(token)
+    }
+
+    fn next_significant_token(&mut self) -> Option<Token<'input>> {
+        for item in &mut self.lexer {
+            match item {
+                Ok(token) if is_ignored(token.kind()) => continue,
+                Ok(token) => return Some(token),
+                Err(err) => {
+                    if err.is_limit() {
+                        self.accept_errors = false;
+                    }
+                    self.errors.push(err);
+                }
+            }
+        }
+        None
+    }
+
+    fn current_start(&mut self) -> usize {
+        if let Some(token) = self.peek_token() { token.index() } else { self.last_end }
+    }
+
+    fn current_span(&mut self) -> Span {
+        self.peek_token()
+            .map(|token| Span::new(token.index(), token.index() + token.data().len()))
+            .unwrap_or_else(|| Span::new(self.last_end, self.last_end))
+    }
+
+    fn span_from(&self, start: usize) -> Span {
+        Span::new(start, self.last_end.max(start))
+    }
+}
+
+trait MissingNameContext {
+    fn with_context(self, context: &str) -> Self;
+}
+
+impl MissingNameContext for Name {
+    fn with_context(self, _context: &str) -> Self {
+        self
+    }
+}
+
+fn is_ignored(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Whitespace | TokenKind::Comment | TokenKind::Comma)
+}
+
+fn unescape_string(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut iter = input.chars();
+    while let Some(c) = iter.next() {
+        if c != '\\' {
+            output.push(c);
+            continue;
+        }
+
+        let Some(c2) = iter.next() else {
+            output.push(c);
+            break;
+        };
+
+        match c2 {
+            '"' | '\\' | '/' => output.push(c2),
+            'b' => output.push('\u{0008}'),
+            'f' => output.push('\u{000c}'),
+            'n' => output.push('\n'),
+            'r' => output.push('\r'),
+            't' => output.push('\t'),
+            'u' => {
+                let value = iter.by_ref().take(4).fold(0, |acc, c| {
+                    let digit = c.to_digit(16).unwrap_or(0);
+                    (acc << 4) + digit
+                });
+                if let Some(c) = char::from_u32(value) {
+                    output.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    output
+}
+
+fn normalize_block_string(raw: &str) -> String {
+    let content =
+        raw.strip_prefix(r#"""""#).and_then(|value| value.strip_suffix(r#"""""#)).unwrap_or(raw);
+    let mut output = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            output.push('\n');
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}

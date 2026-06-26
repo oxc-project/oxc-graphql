@@ -2,11 +2,11 @@ use std::fmt;
 
 /// An `Error` type for operations performed in the lexer and the parser.
 ///
-/// Errors get returned alongside the resulting CST if either the lexer or the
+/// Errors get returned alongside the resulting AST if either the lexer or the
 /// parser encounters lexical or syntactical errors respectively.
 ///
-/// We encourage you to check for the CST's errors before proceeding to iterate
-/// over the CST's nodes:
+/// We encourage you to check for the AST's errors before proceeding to iterate
+/// over the AST's nodes:
 ///
 /// ## Example
 /// ```rust
@@ -14,11 +14,11 @@ use std::fmt;
 ///
 /// let input = "union SearchResult = Photo | Person | Cat | Dog";
 /// let parser = Parser::new(input);
-/// let cst = parser.parse();
+/// let ast = parser.parse();
 ///
-/// assert_eq!(0, cst.errors().len());
+/// assert_eq!(0, ast.errors().len());
 ///
-/// let doc = cst.document();
+/// let doc = ast.document();
 /// ```
 ///
 /// ### Diagnostics

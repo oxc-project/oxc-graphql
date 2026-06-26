@@ -2,7 +2,7 @@
 //! query.
 
 use oxc_graphql_parser::Parser;
-use oxc_graphql_parser::cst;
+use oxc_graphql_parser::ast;
 use std::fs;
 use std::path::Path;
 
@@ -11,25 +11,24 @@ fn are_variables_unused() {
     let file = Path::new("crates/oxc_graphql_parser/examples/graph_check_mutation.graphql");
     let src = fs::read_to_string(file).expect("Could not read schema file.");
     let parser = Parser::new(&src);
-    let cst = parser.parse();
+    let ast = parser.parse();
 
-    assert_eq!(0, cst.errors().len());
+    assert_eq!(0, ast.errors().len());
 
-    let doc = cst.document();
+    let doc = ast.document();
 
-    for def in doc.definitions() {
-        if let cst::Definition::OperationDefinition(op_def) = def {
-            assert_eq!(op_def.name().unwrap().text(), "GraphCheckMutation");
+    for def in &doc.definitions {
+        if let ast::Definition::Operation(op_def) = def {
+            assert_eq!(op_def.name.as_ref().unwrap().as_str(), "GraphCheckMutation");
 
-            let variable_defs = op_def.variable_definitions();
             // We grab all the variables defined in the mutation
-            let variables: Vec<String> = variable_defs
+            let variables: Vec<String> = op_def
+                .variable_definitions
                 .iter()
-                .flat_map(|v| v.variable_definitions())
-                .filter_map(|v| Some(v.variable()?.text().to_string()))
+                .map(|definition| definition.variable.name.to_string())
                 .collect();
 
-            if let Some(selection_set) = op_def.selection_set() {
+            if let Some(selection_set) = &op_def.selection_set {
                 let mut vec = Vec::default();
                 // Get the variables defined in the mutation's selection set.
                 let used_vars = get_variables_from_selection(&mut vec, selection_set);
@@ -40,26 +39,19 @@ fn are_variables_unused() {
     }
 }
 
-fn get_variables_from_selection(
-    used_vars: &mut Vec<String>,
-    selection_set: cst::SelectionSet,
-) -> &Vec<String> {
-    for selection in selection_set.selections() {
+fn get_variables_from_selection<'a>(
+    used_vars: &'a mut Vec<String>,
+    selection_set: &ast::SelectionSet,
+) -> &'a Vec<String> {
+    for selection in &selection_set.selections {
         match selection {
-            cst::Selection::Field(field) => {
-                let arguments = field.arguments();
-                let mut vars: Vec<String> = arguments
-                    .iter()
-                    .flat_map(|a| a.arguments())
-                    .filter_map(|v| {
-                        if let cst::Value::Variable(var) = v.value()? {
-                            return Some(var.text().to_string());
-                        }
-                        None
-                    })
-                    .collect();
+            ast::Selection::Field(field) => {
+                let mut vars = Vec::new();
+                for argument in &field.arguments {
+                    collect_variable_value(argument.value.as_ref(), &mut vars);
+                }
                 used_vars.append(&mut vars);
-                if let Some(selection_set) = field.selection_set() {
+                if let Some(selection_set) = &field.selection_set {
                     get_variables_from_selection(used_vars, selection_set);
                 }
             }
@@ -67,6 +59,23 @@ fn get_variables_from_selection(
         }
     }
     used_vars
+}
+
+fn collect_variable_value(value: Option<&ast::Value>, variables: &mut Vec<String>) {
+    match value {
+        Some(ast::Value::Variable(variable)) => variables.push(variable.name.to_string()),
+        Some(ast::Value::List(list)) => {
+            for value in &list.values {
+                collect_variable_value(Some(value), variables);
+            }
+        }
+        Some(ast::Value::Object(object)) => {
+            for field in &object.fields {
+                collect_variable_value(field.value.as_ref(), variables);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn do_variables_match(a: &[String], b: &[String]) -> bool {

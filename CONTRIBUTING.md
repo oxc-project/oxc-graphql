@@ -24,11 +24,6 @@ To run tests:
 cargo test --workspace
 ```
 
-To generate parser API after changes to `ungrammar` file:
-```bash
-cargo xtask codegen
-```
-
 To run parser and lexer tests _and_ let the testing framework make changes to the incorrect files on a unix system:
 ```bash
 env UPDATE_EXPECT=1 cargo test --package oxc-graphql-parser
@@ -48,7 +43,8 @@ cargo +nightly fmt --all
 To lint your code:
 ```bash
 rustup component add clippy
-cargo xtask lint
+cargo +nightly fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ### IDEs

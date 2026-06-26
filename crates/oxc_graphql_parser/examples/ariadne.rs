@@ -6,11 +6,11 @@ use ariadne::Report;
 use ariadne::ReportKind;
 use ariadne::Source;
 use oxc_graphql_parser::Parser;
-use oxc_graphql_parser::cst;
+use oxc_graphql_parser::ast;
 use std::fs;
 use std::path::Path;
 
-fn parse_schema() -> cst::Document {
+fn parse_schema() -> ast::Document {
     let file = Path::new("crates/oxc_graphql_parser/examples/schema_with_errors.graphql");
     let src = fs::read_to_string(file).expect("Could not read schema file.");
     // This is really useful for display the src path within the diagnostic.
@@ -21,12 +21,12 @@ fn parse_schema() -> cst::Document {
         .expect("Could not get &str from file name.");
 
     let parser = Parser::new(&src);
-    let cst = parser.parse();
+    let ast = parser.parse();
 
     // each err comes with the two pieces of data you need for diagnostics:
     // - message (err.message())
     // - index (err.index())
-    for err in cst.errors() {
+    for err in ast.errors() {
         // We need to create a report and print that individually, as the error
         // slice can have many errors.
         let start = err.index();
@@ -39,7 +39,7 @@ fn parse_schema() -> cst::Document {
             .unwrap();
     }
 
-    cst.document()
+    ast.into_root()
 }
 
 fn main() {

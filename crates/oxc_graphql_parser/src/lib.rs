@@ -1,26 +1,18 @@
 #![doc = include_str!("../README.md")]
 #![allow(rustdoc::bare_urls, rustdoc::broken_intra_doc_links, rustdoc::invalid_rust_codeblocks)]
 
+pub mod ast;
 mod lexer;
 #[cfg(test)]
 mod tests;
 
-pub mod cst;
 mod error;
 mod limit;
-mod parser;
+mod parser_ast;
 
 pub use crate::error::Error;
 pub use crate::lexer::Lexer;
 pub use crate::lexer::Token;
 pub use crate::lexer::TokenKind;
 pub use crate::limit::LimitTracker;
-pub use crate::parser::Parser;
-pub use crate::parser::SyntaxElement;
-pub use crate::parser::SyntaxKind;
-pub use crate::parser::SyntaxNode;
-pub(crate) use crate::parser::SyntaxNodeChildren;
-pub use crate::parser::SyntaxToken;
-pub use crate::parser::SyntaxTree;
-pub(crate) use crate::parser::TokenText;
-pub use rowan::TextRange;
+pub use crate::parser_ast::Parser;

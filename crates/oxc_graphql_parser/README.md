@@ -4,7 +4,7 @@ A spec-compliant, error-resilient GraphQL lexer and parser for Rust.
 
 ## Features
 
-- Typed GraphQL concrete syntax tree based on the [October 2021 specification]
+- Typed GraphQL AST based on the [October 2021 specification]
 - Error-resilient lexing and parsing
 - GraphQL schema and query parsing
 - Standalone lexer API
@@ -31,25 +31,25 @@ use oxc_graphql_parser::Parser;
 
 let input = "union SearchResult = Photo | Person | Cat | Dog";
 let parser = Parser::new(input);
-let cst = parser.parse();
+let ast = parser.parse();
 
-assert_eq!(0, cst.errors().len());
+assert_eq!(0, ast.errors().len());
 ```
 
-`Parser::parse` always returns a concrete syntax tree, even when lexing or
-parsing reports errors. Check `cst.errors()` before walking the document:
+`Parser::parse` always returns an AST, even when lexing or parsing reports
+errors. Check `ast.errors()` before walking the document:
 
 ```rust
 use oxc_graphql_parser::Parser;
 
 let input = "union SearchResult = Photo | Person | Cat | Dog";
 let parser = Parser::new(input);
-let cst = parser.parse();
+let ast = parser.parse();
 
-assert_eq!(0, cst.errors().len());
+assert_eq!(0, ast.errors().len());
 
-let document = cst.document();
-for definition in document.definitions() {
+let document = ast.document();
+for definition in &document.definitions {
     println!("{definition:?}");
 }
 ```
@@ -65,7 +65,7 @@ The [examples directory] contains integrations for diagnostics and analysis:
 ### Get Field Names In An Object
 
 ```rust
-use oxc_graphql_parser::{cst, Parser};
+use oxc_graphql_parser::{ast, Parser};
 
 let input = "
 type ProductDimension {
@@ -75,17 +75,17 @@ type ProductDimension {
 ";
 
 let parser = Parser::new(input);
-let cst = parser.parse();
+let ast = parser.parse();
 
-assert_eq!(0, cst.errors().len());
+assert_eq!(0, ast.errors().len());
 
-let document = cst.document();
-for definition in document.definitions() {
-    if let cst::Definition::ObjectTypeDefinition(object_type) = definition {
-        assert_eq!(object_type.name().unwrap().text(), "ProductDimension");
+let document = ast.document();
+for definition in &document.definitions {
+    if let ast::Definition::ObjectType(object_type) = definition {
+        assert_eq!(object_type.name.as_str(), "ProductDimension");
 
-        for field in object_type.fields_definition().unwrap().field_definitions() {
-            println!("{}", field.name().unwrap().text());
+        for field in &object_type.fields {
+            println!("{}", field.name);
         }
     }
 }
@@ -94,7 +94,7 @@ for definition in document.definitions() {
 ### Get Variables Used In A Query
 
 ```rust
-use oxc_graphql_parser::{cst, Parser};
+use oxc_graphql_parser::{ast, Parser};
 
 let input = "
 query GraphQuery($graph_id: ID!, $variant: String) {
@@ -107,20 +107,19 @@ query GraphQuery($graph_id: ID!, $variant: String) {
 ";
 
 let parser = Parser::new(input);
-let cst = parser.parse();
+let ast = parser.parse();
 
-assert_eq!(0, cst.errors().len());
+assert_eq!(0, ast.errors().len());
 
-let document = cst.document();
-for definition in document.definitions() {
-    if let cst::Definition::OperationDefinition(operation) = definition {
-        assert_eq!(operation.name().unwrap().text(), "GraphQuery");
+let document = ast.document();
+for definition in &document.definitions {
+    if let ast::Definition::Operation(operation) = definition {
+        assert_eq!(operation.name.as_ref().unwrap().as_str(), "GraphQuery");
 
         let variables: Vec<String> = operation
-            .variable_definitions()
+            .variable_definitions
             .iter()
-            .flat_map(|definitions| definitions.variable_definitions())
-            .filter_map(|definition| Some(definition.variable()?.text().to_string()))
+            .map(|definition| definition.variable.name.to_string())
             .collect();
 
         assert_eq!(

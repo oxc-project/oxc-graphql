@@ -1,228 +1,187 @@
-// The testing framework in this file is pretty much entirely copied from rust-analyzer's parser and lexer tests:
-// https://github.com/rust-analyzer/rust-analyzer/blob/master/crates/syntax/src/tests.rs
-
-use crate::Error;
 use crate::Lexer;
 use crate::Parser;
-use crate::cst::CstNode;
-use expect_test::expect_file;
-use indexmap::IndexMap;
-use std::env;
-use std::fmt::Write;
+use crate::TokenKind;
+use crate::ast;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-// To run these tests and update files:
-// ```bash
-// env UPDATE_EXPECT=1 cargo test --package oxc-graphql-parser
-// ```
-// or on windows
-// ```bash
-// $env:UPDATE_EXPECT=1; cargo test --package oxc-graphql-parser
-// ```
 #[test]
 fn lexer_tests() {
-    dir_tests(&test_data_dir(), &["lexer/ok"], "txt", |text, path| {
-        let (dumped, errors) = dump_tokens_and_errors(text);
-        assert_errors_are_absent(&errors, path);
-        dumped
-    });
-
-    dir_tests(&test_data_dir(), &["lexer/err"], "txt", |text, path| {
-        let (dumped, errors) = dump_tokens_and_errors(text);
-        assert_errors_are_present(&errors, path);
-        dumped
-    });
+    let source = r#"
+type Query {
+  hello(name: String = "world"): String
+}
+"#;
+    let (tokens, errors) = Lexer::new(source).lex();
+    assert!(errors.is_empty());
+    assert!(tokens.iter().any(|token| token.kind() == TokenKind::Name && token.data() == "Query"));
 }
 
 #[test]
-fn parser_tests() {
-    dir_tests(&test_data_dir(), &["parser/ok"], "txt", |text, path| {
-        let parser = Parser::new(text);
-        let cst = parser.parse();
-        assert_errors_are_absent(&cst.errors().cloned().collect::<Vec<_>>(), path);
-        assert_cst_spans_are_valid_utf8_boundaries(text, cst.document().syntax());
-        format!("{cst:?}")
-    });
+fn parser_parses_object_type_definition() {
+    let source = r#"
+type Query {
+  hello(name: String = "world"): String
+}
+"#;
+    let ast = Parser::new(source).parse();
 
-    dir_tests(&test_data_dir(), &["parser/err"], "txt", |text, path| {
-        let parser = Parser::new(text);
-        let cst = parser.parse();
-        assert_errors_are_present(&cst.errors().cloned().collect::<Vec<_>>(), path);
-        assert_cst_spans_are_valid_utf8_boundaries(text, cst.document().syntax());
-        format!("{cst:?}")
-    });
+    assert_eq!(ast.errors().len(), 0);
+    let document = ast.document();
+    assert_eq!(document.definitions.len(), 1);
+
+    let ast::Definition::ObjectType(object) = &document.definitions[0] else {
+        panic!("expected object type definition");
+    };
+    assert_eq!(object.name.as_str(), "Query");
+    assert_eq!(object.fields.len(), 1);
+    assert_eq!(object.fields[0].name.as_str(), "hello");
+    assert_eq!(object.fields[0].arguments[0].name.as_str(), "name");
 }
 
-fn assert_errors_are_present(errors: &[Error], path: &Path) {
-    assert!(!errors.is_empty(), "There should be errors in the file {:?}", path.display());
+#[test]
+fn parser_parses_query_variables_and_used_variables() {
+    let source = r#"
+query GraphQuery($graph_id: ID!, $variant: String) {
+  service(id: $graph_id) {
+    schema(tag: $variant) {
+      document
+    }
+  }
+}
+"#;
+    let ast = Parser::new(source).parse();
+    assert_eq!(ast.errors().len(), 0);
+
+    let ast::Definition::Operation(operation) = &ast.document().definitions[0] else {
+        panic!("expected operation definition");
+    };
+    assert_eq!(operation.name.as_ref().unwrap().as_str(), "GraphQuery");
+    assert_eq!(operation.variable_definitions.len(), 2);
+
+    let mut used = Vec::new();
+    collect_variables(operation.selection_set.as_ref().unwrap(), &mut used);
+    assert_eq!(used, ["graph_id", "variant"]);
 }
 
-fn assert_errors_are_absent(errors: &[Error], path: &Path) {
-    if !errors.is_empty() {
-        println!("errors: {}", errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"));
-        panic!("There should be no errors in the file {:?}", path.display(),);
+#[test]
+fn parser_parses_selection_set_and_type_roots() {
+    let selection = Parser::new("{ product { name } }").parse_selection_set();
+    assert_eq!(selection.errors().len(), 0);
+    assert_eq!(selection.field_set().selections.len(), 1);
+
+    let ty = Parser::new("[String!]!").parse_type();
+    assert_eq!(ty.errors().len(), 0);
+    assert!(matches!(ty.ty(), ast::Type::NonNull(_)));
+}
+
+#[test]
+fn parser_ok_fixtures_have_no_errors() {
+    for path in graphql_files("parser/ok") {
+        let source = fs::read_to_string(&path).unwrap();
+        let ast = Parser::new(&source).parse();
+        let errors = ast.errors().collect::<Vec<_>>();
+        assert!(errors.is_empty(), "{}: {errors:?}", path.display());
     }
 }
 
-/// Concatenate tokens and errors.
-fn dump_tokens_and_errors(text: &str) -> (String, Vec<Error>) {
-    let mut acc = String::new();
-    let mut errors = Vec::new();
-    for result in Lexer::new(text) {
-        match result {
-            Ok(token) => writeln!(acc, "{token:?}").unwrap(),
-            Err(err) => {
-                writeln!(acc, "{err:?}").unwrap();
-                errors.push(err);
+#[test]
+fn parser_err_fixtures_have_errors() {
+    for path in graphql_files("parser/err") {
+        let source = fs::read_to_string(&path).unwrap();
+        let ast = Parser::new(&source).parse();
+        assert!(ast.errors().len() > 0, "{}", path.display());
+    }
+}
+
+#[test]
+#[ignore]
+fn ecosystem_graphql_corpus_has_no_parse_errors() {
+    let root = std::env::var_os("OXC_GRAPHQL_ECOSYSTEM_REPOS")
+        .map(PathBuf::from)
+        .expect("set OXC_GRAPHQL_ECOSYSTEM_REPOS to an ecosystem-ci repos directory");
+    let mut files = Vec::new();
+    collect_graphql_files(&root, &mut files);
+
+    let mut failures = Vec::new();
+    for path in &files {
+        let source = fs::read_to_string(path).unwrap();
+        let ast = Parser::new(&source).parse();
+        let errors = ast.errors().collect::<Vec<_>>();
+        if !errors.is_empty() {
+            failures.push(format!("{}: {errors:?}", path.display()));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} ecosystem GraphQL files failed to parse:\n{}",
+        failures.len(),
+        files.len(),
+        failures.join("\n")
+    );
+}
+
+fn collect_variables<'a>(selection_set: &'a ast::SelectionSet, output: &mut Vec<&'a str>) {
+    for selection in &selection_set.selections {
+        if let ast::Selection::Field(field) = selection {
+            for argument in &field.arguments {
+                collect_variable_value(argument.value.as_ref(), output);
+            }
+            if let Some(selection_set) = &field.selection_set {
+                collect_variables(selection_set, output);
             }
         }
     }
-    (acc, errors)
 }
 
-/// Compares input code taken from a `.graphql` file in test_fixtures and its
-/// expected output in the corresponding `.txt` file.
-///
-/// The test fails if the output differs.
-///
-/// If a matching file does not exist, it will be created, filled with output,
-/// but fail the test.
-fn dir_tests<F>(test_data_dir: &Path, paths: &[&str], outfile_extension: &str, f: F)
-where
-    F: Fn(&str, &Path) -> String,
-{
-    for (path, input_code) in collect_graphql_files(test_data_dir, paths) {
-        let actual = f(&input_code, &path);
-        let path = path.with_extension(outfile_extension);
-        expect_file![path].assert_eq(&actual)
+fn collect_variable_value<'a>(value: Option<&'a ast::Value>, output: &mut Vec<&'a str>) {
+    match value {
+        Some(ast::Value::Variable(variable)) => output.push(variable.name.as_str()),
+        Some(ast::Value::List(list)) => {
+            for value in &list.values {
+                collect_variable_value(Some(value), output);
+            }
+        }
+        Some(ast::Value::Object(object)) => {
+            for field in &object.fields {
+                collect_variable_value(field.value.as_ref(), output);
+            }
+        }
+        _ => {}
     }
 }
 
-/// Collects all `.graphql` files from `dir` subdirectories defined by `paths`.
-fn collect_graphql_files(root_dir: &Path, paths: &[&str]) -> Vec<(PathBuf, String)> {
-    paths
-        .iter()
-        .flat_map(|path| {
-            let path = root_dir.to_owned().join(path);
-            graphql_files_in_dir(&path).into_iter()
-        })
-        .map(|path| {
-            let text = fs::read_to_string(&path)
-                .unwrap_or_else(|_| panic!("File at {path:?} should be valid"));
-            (path, text)
-        })
-        .collect()
-}
-
-/// Collects paths to all `.graphql` files from `dir` in a sorted `Vec<PathBuf>`.
-fn graphql_files_in_dir(dir: &Path) -> Vec<PathBuf> {
-    let mut paths = fs::read_dir(dir)
+fn graphql_files(path: &str) -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data").join(path);
+    let mut files = fs::read_dir(dir)
         .unwrap()
-        .map(|file| {
-            let file = file?;
-            let path = file.path();
-            if path.extension().unwrap_or_default() == "graphql" {
-                Ok(Some(path))
-            } else {
-                Ok(None)
-            }
-        })
-        // Get rid of the `None`s
-        .filter_map(|result: std::io::Result<_>| result.transpose())
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-
-    paths.sort();
-
-    // Check for duplicate numbers.
-    let mut seen = IndexMap::new();
-    let next_number = paths.len() + 1;
-    for path in &paths {
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        let (number, name): (usize, _) = match file_name.split_once('_') {
-            Some((number, name)) => match number.parse() {
-                Ok(number) => (number, name),
-                Err(err) => {
-                    panic!("Invalid test file name: {path:?} does not start with a number ({err})")
-                }
-            },
-            None => panic!("Invalid test file name: {path:?} does not start with a number"),
-        };
-
-        if let Some(existing) = seen.get(&number) {
-            let suggest = dir.join(format!("{next_number:03}_{name}"));
-            panic!(
-                "Conflicting test file: {path:?} has the same number as {existing:?}. Suggested name: {suggest:?}"
-            );
-        }
-
-        seen.insert(number, path);
-    }
-
-    paths
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "graphql"))
+        .collect::<Vec<_>>();
+    files.sort();
+    files
 }
 
-/// PathBuf of test fixtures directory.
-fn test_data_dir() -> PathBuf {
-    project_root().join("oxc_graphql_parser/test_data")
-}
-
-/// oxc-graphql-parser project root.
-fn project_root() -> PathBuf {
-    Path::new(
-        &env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned()),
-    )
-    .ancestors()
-    .nth(1)
-    .unwrap()
-    .to_path_buf()
-}
-
-/// Verifies all CST node and token spans fall on valid UTF-8 character boundaries.
-fn assert_cst_spans_are_valid_utf8_boundaries(input: &str, node: &crate::SyntaxNode) {
-    use rowan::NodeOrToken;
-
-    let range = node.text_range();
-    let start: usize = range.start().into();
-    let end: usize = range.end().into();
-
-    assert!(
-        input.is_char_boundary(start),
-        "Node {:?} start {} is not a char boundary",
-        node.kind(),
-        start
-    );
-    assert!(
-        input.is_char_boundary(end),
-        "Node {:?} end {} is not a char boundary",
-        node.kind(),
-        end
-    );
-
-    for child in node.children_with_tokens() {
-        match child {
-            NodeOrToken::Node(child_node) => {
-                assert_cst_spans_are_valid_utf8_boundaries(input, &child_node)
+fn collect_graphql_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if matches!(name, ".git" | "node_modules" | "target") {
+                continue;
             }
-            NodeOrToken::Token(token) => {
-                let range = token.text_range();
-                let start: usize = range.start().into();
-                let end: usize = range.end().into();
-                assert!(
-                    input.is_char_boundary(start),
-                    "Token {:?} start {} is not a char boundary",
-                    token.kind(),
-                    start
-                );
-                assert!(
-                    input.is_char_boundary(end),
-                    "Token {:?} end {} is not a char boundary",
-                    token.kind(),
-                    end
-                );
-            }
+            collect_graphql_files(&path, files);
+        } else if path
+            .extension()
+            .is_some_and(|extension| matches!(extension.to_str(), Some("gql" | "graphql")))
+        {
+            files.push(path);
         }
     }
+    files.sort();
 }

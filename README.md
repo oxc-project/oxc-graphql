@@ -4,7 +4,7 @@ Rust tooling for parsing GraphQL documents.
 
 This repository currently contains one crate:
 
-- [`oxc-graphql-parser`](crates/oxc_graphql_parser) - a spec-compliant GraphQL lexer and parser that produces a typed concrete syntax tree.
+- [`oxc-graphql-parser`](crates/oxc_graphql_parser) - a spec-compliant GraphQL lexer and parser that produces a typed AST.
 
 ## Status
 

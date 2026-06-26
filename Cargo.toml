@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "xtask",
     "crates/oxc_graphql_parser",
     "fuzz",
 ]

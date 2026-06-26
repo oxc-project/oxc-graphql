@@ -1,6 +1,6 @@
 use criterion::*;
 use oxc_graphql_parser::Lexer;
-use oxc_graphql_parser::cst;
+use oxc_graphql_parser::ast;
 
 fn parse_schema(schema: &str) {
     let parser = oxc_graphql_parser::Parser::new(schema);
@@ -14,13 +14,10 @@ fn parse_schema(schema: &str) {
     let document = tree.document();
 
     // Simulate a basic field traversal operation.
-    for definition in document.definitions() {
-        if let cst::Definition::ObjectTypeDefinition(operation) = definition {
-            let fields = operation
-                .fields_definition()
-                .expect("the node FieldsDefinition is not optional in the spec; qed");
-            for field in fields.field_definitions() {
-                std::hint::black_box(field.ty());
+    for definition in &document.definitions {
+        if let ast::Definition::ObjectType(operation) = definition {
+            for field in &operation.fields {
+                std::hint::black_box(&field.ty);
             }
         }
     }
