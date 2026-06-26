@@ -34,10 +34,10 @@ codspeed = ["criterion2/codspeed"]
 
 [[bench]]
 name = "query"
-path = "benches/query.rs"
+path = "../../benches/query.rs"
 harness = false
 
 [[bench]]
 name = "supergraph"
-path = "benches/supergraph.rs"
+path = "../../benches/supergraph.rs"
 harness = false
