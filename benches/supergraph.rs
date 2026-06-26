@@ -1,9 +1,11 @@
 use criterion::*;
+use oxc_graphql_parser::Allocator;
 use oxc_graphql_parser::Lexer;
 use oxc_graphql_parser::ast;
 
 fn parse_schema(schema: &str) {
-    let parser = oxc_graphql_parser::Parser::new(schema);
+    let allocator = Allocator::default();
+    let parser = oxc_graphql_parser::Parser::new(&allocator, schema);
     let tree = parser.parse();
     let errors = tree.errors().collect::<Vec<_>>();
 

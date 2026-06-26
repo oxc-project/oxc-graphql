@@ -1,6 +1,7 @@
 //! Example usage of `oxc-graphql-parser` to check for unused vars in a given GraphQL
 //! query.
 
+use oxc_graphql_parser::Allocator;
 use oxc_graphql_parser::Parser;
 use oxc_graphql_parser::ast;
 use std::fs;
@@ -10,7 +11,8 @@ fn are_variables_unused() {
     // Example mutation with variables.
     let file = Path::new("crates/oxc_graphql_parser/examples/graph_check_mutation.graphql");
     let src = fs::read_to_string(file).expect("Could not read schema file.");
-    let parser = Parser::new(&src);
+    let allocator = Allocator::default();
+    let parser = Parser::new(&allocator, &src);
     let ast = parser.parse();
 
     assert_eq!(0, ast.errors().len());
@@ -41,7 +43,7 @@ fn are_variables_unused() {
 
 fn get_variables_from_selection<'a>(
     used_vars: &'a mut Vec<String>,
-    selection_set: &ast::SelectionSet,
+    selection_set: &ast::SelectionSet<'_>,
 ) -> &'a Vec<String> {
     for selection in &selection_set.selections {
         match selection {
@@ -61,7 +63,7 @@ fn get_variables_from_selection<'a>(
     used_vars
 }
 
-fn collect_variable_value(value: Option<&ast::Value>, variables: &mut Vec<String>) {
+fn collect_variable_value(value: Option<&ast::Value<'_>>, variables: &mut Vec<String>) {
     match value {
         Some(ast::Value::Variable(variable)) => variables.push(variable.name.to_string()),
         Some(ast::Value::List(list)) => {

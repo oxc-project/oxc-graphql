@@ -10,10 +10,11 @@ use std::fmt;
 ///
 /// ## Example
 /// ```rust
-/// use oxc_graphql_parser::Parser;
+/// use oxc_graphql_parser::{Allocator, Parser};
 ///
 /// let input = "union SearchResult = Photo | Person | Cat | Dog";
-/// let parser = Parser::new(input);
+/// let allocator = Allocator::default();
+/// let parser = Parser::new(&allocator, input);
 /// let ast = parser.parse();
 ///
 /// assert_eq!(0, ast.errors().len());

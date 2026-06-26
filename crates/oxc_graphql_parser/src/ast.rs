@@ -3,6 +3,8 @@ use crate::LimitTracker;
 use std::fmt;
 use std::slice::Iter;
 
+pub use oxc_allocator::{Box as AstBox, Vec as AstVec};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Span {
     pub start: usize,
@@ -15,24 +17,24 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ast<T> {
-    source: String,
+#[derive(Debug, PartialEq)]
+pub struct Ast<'a, T> {
+    source: &'a str,
     root: T,
     errors: Vec<Error>,
     recursion_limit: LimitTracker,
     token_limit: LimitTracker,
 }
 
-impl<T> Ast<T> {
+impl<'a, T> Ast<'a, T> {
     pub(crate) fn new(
-        source: &str,
+        source: &'a str,
         root: T,
         errors: Vec<Error>,
         recursion_limit: LimitTracker,
         token_limit: LimitTracker,
     ) -> Self {
-        Self { source: source.to_string(), root, errors, recursion_limit, token_limit }
+        Self { source, root, errors, recursion_limit, token_limit }
     }
 
     pub fn root(&self) -> &T {
@@ -44,7 +46,7 @@ impl<T> Ast<T> {
     }
 
     pub fn source(&self) -> &str {
-        &self.source
+        self.source
     }
 
     pub fn errors(&self) -> Iter<'_, Error> {
@@ -60,53 +62,53 @@ impl<T> Ast<T> {
     }
 }
 
-impl Ast<Document> {
-    pub fn document(&self) -> &Document {
+impl<'a> Ast<'a, Document<'a>> {
+    pub fn document(&self) -> &Document<'a> {
         self.root()
     }
 }
 
-impl Ast<SelectionSet> {
-    pub fn field_set(&self) -> &SelectionSet {
+impl<'a> Ast<'a, SelectionSet<'a>> {
+    pub fn field_set(&self) -> &SelectionSet<'a> {
         self.root()
     }
 }
 
-impl Ast<Type> {
-    pub fn ty(&self) -> &Type {
+impl<'a> Ast<'a, Type<'a>> {
+    pub fn ty(&self) -> &Type<'a> {
         self.root()
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Document {
-    pub definitions: Vec<Definition>,
+#[derive(Debug, PartialEq)]
+pub struct Document<'a> {
+    pub definitions: AstVec<'a, Definition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Definition {
-    Operation(OperationDefinition),
-    Fragment(FragmentDefinition),
-    Directive(DirectiveDefinition),
-    Schema(SchemaDefinition),
-    SchemaExtension(SchemaExtension),
-    ScalarType(ScalarTypeDefinition),
-    ScalarTypeExtension(ScalarTypeExtension),
-    ObjectType(ObjectTypeDefinition),
-    ObjectTypeExtension(ObjectTypeExtension),
-    InterfaceType(InterfaceTypeDefinition),
-    InterfaceTypeExtension(InterfaceTypeExtension),
-    UnionType(UnionTypeDefinition),
-    UnionTypeExtension(UnionTypeExtension),
-    EnumType(EnumTypeDefinition),
-    EnumTypeExtension(EnumTypeExtension),
-    InputObjectType(InputObjectTypeDefinition),
-    InputObjectTypeExtension(InputObjectTypeExtension),
+#[derive(Debug, PartialEq)]
+pub enum Definition<'a> {
+    Operation(OperationDefinition<'a>),
+    Fragment(FragmentDefinition<'a>),
+    Directive(DirectiveDefinition<'a>),
+    Schema(SchemaDefinition<'a>),
+    SchemaExtension(SchemaExtension<'a>),
+    ScalarType(ScalarTypeDefinition<'a>),
+    ScalarTypeExtension(ScalarTypeExtension<'a>),
+    ObjectType(ObjectTypeDefinition<'a>),
+    ObjectTypeExtension(ObjectTypeExtension<'a>),
+    InterfaceType(InterfaceTypeDefinition<'a>),
+    InterfaceTypeExtension(InterfaceTypeExtension<'a>),
+    UnionType(UnionTypeDefinition<'a>),
+    UnionTypeExtension(UnionTypeExtension<'a>),
+    EnumType(EnumTypeDefinition<'a>),
+    EnumTypeExtension(EnumTypeExtension<'a>),
+    InputObjectType(InputObjectTypeDefinition<'a>),
+    InputObjectTypeExtension(InputObjectTypeExtension<'a>),
 }
 
-impl Definition {
-    pub fn name(&self) -> Option<&Name> {
+impl<'a> Definition<'a> {
+    pub fn name(&self) -> Option<&Name<'a>> {
         match self {
             Self::Operation(definition) => definition.name.as_ref(),
             Self::Fragment(definition) => Some(&definition.name),
@@ -128,28 +130,28 @@ impl Definition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Name {
-    pub value: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Name<'a> {
+    pub value: &'a str,
     pub span: Span,
 }
 
-impl Name {
+impl Name<'_> {
     pub fn as_str(&self) -> &str {
-        &self.value
+        self.value
     }
 }
 
-impl fmt::Display for Name {
+impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.value)
+        f.write_str(self.value)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StringValue {
-    pub raw: String,
-    pub value: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StringValue<'a> {
+    pub raw: &'a str,
+    pub value: &'a str,
     pub block: bool,
     pub span: Span,
 }
@@ -161,111 +163,111 @@ pub enum OperationType {
     Subscription,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct OperationDefinition {
-    pub description: Option<StringValue>,
+#[derive(Debug, PartialEq)]
+pub struct OperationDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
     pub operation_type: OperationType,
-    pub name: Option<Name>,
-    pub variable_definitions: Vec<VariableDefinition>,
-    pub directives: Vec<Directive>,
-    pub selection_set: Option<SelectionSet>,
+    pub name: Option<Name<'a>>,
+    pub variable_definitions: AstVec<'a, VariableDefinition<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub selection_set: Option<SelectionSet<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FragmentDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub variable_definitions: Vec<VariableDefinition>,
-    pub type_condition: NamedType,
-    pub directives: Vec<Directive>,
-    pub selection_set: Option<SelectionSet>,
+#[derive(Debug, PartialEq)]
+pub struct FragmentDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub variable_definitions: AstVec<'a, VariableDefinition<'a>>,
+    pub type_condition: NamedType<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub selection_set: Option<SelectionSet<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SelectionSet {
-    pub selections: Vec<Selection>,
+#[derive(Debug, PartialEq)]
+pub struct SelectionSet<'a> {
+    pub selections: AstVec<'a, Selection<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Selection {
-    Field(Field),
-    FragmentSpread(FragmentSpread),
-    InlineFragment(InlineFragment),
+#[derive(Debug, PartialEq)]
+pub enum Selection<'a> {
+    Field(Field<'a>),
+    FragmentSpread(FragmentSpread<'a>),
+    InlineFragment(InlineFragment<'a>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Field {
-    pub alias: Option<Name>,
-    pub name: Name,
-    pub arguments: Vec<Argument>,
-    pub directives: Vec<Directive>,
-    pub selection_set: Option<SelectionSet>,
+#[derive(Debug, PartialEq)]
+pub struct Field<'a> {
+    pub alias: Option<Name<'a>>,
+    pub name: Name<'a>,
+    pub arguments: AstVec<'a, Argument<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub selection_set: Option<SelectionSet<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FragmentSpread {
-    pub name: Name,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct FragmentSpread<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InlineFragment {
-    pub type_condition: Option<NamedType>,
-    pub directives: Vec<Directive>,
-    pub selection_set: Option<SelectionSet>,
+#[derive(Debug, PartialEq)]
+pub struct InlineFragment<'a> {
+    pub type_condition: Option<NamedType<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub selection_set: Option<SelectionSet<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct VariableDefinition {
-    pub description: Option<StringValue>,
-    pub variable: Variable,
-    pub ty: Option<Type>,
-    pub default_value: Option<Value>,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct VariableDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub variable: Variable<'a>,
+    pub ty: Option<Type<'a>>,
+    pub default_value: Option<Value<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Variable {
-    pub name: Name,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Variable<'a> {
+    pub name: Name<'a>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Argument {
-    pub name: Name,
-    pub value: Option<Value>,
+#[derive(Debug, PartialEq)]
+pub struct Argument<'a> {
+    pub name: Name<'a>,
+    pub value: Option<Value<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Directive {
-    pub name: Name,
-    pub arguments: Vec<Argument>,
+#[derive(Debug, PartialEq)]
+pub struct Directive<'a> {
+    pub name: Name<'a>,
+    pub arguments: AstVec<'a, Argument<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Variable(Variable),
-    Int(IntValue),
-    Float(FloatValue),
-    String(StringValue),
+#[derive(Debug, PartialEq)]
+pub enum Value<'a> {
+    Variable(Variable<'a>),
+    Int(IntValue<'a>),
+    Float(FloatValue<'a>),
+    String(StringValue<'a>),
     Boolean(BooleanValue),
     Null(NullValue),
-    Enum(EnumValue),
-    List(ListValue),
-    Object(ObjectValue),
+    Enum(EnumValue<'a>),
+    List(ListValue<'a>),
+    Object(ObjectValue<'a>),
     Missing(Span),
 }
 
-impl Value {
+impl Value<'_> {
     pub fn span(&self) -> Span {
         match self {
             Self::Variable(value) => value.span,
@@ -282,15 +284,15 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct IntValue {
-    pub raw: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IntValue<'a> {
+    pub raw: &'a str,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FloatValue {
-    pub raw: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FloatValue<'a> {
+    pub raw: &'a str,
     pub span: Span,
 }
 
@@ -305,39 +307,39 @@ pub struct NullValue {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EnumValue {
-    pub name: Name,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumValue<'a> {
+    pub name: Name<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ListValue {
-    pub values: Vec<Value>,
+#[derive(Debug, PartialEq)]
+pub struct ListValue<'a> {
+    pub values: AstVec<'a, Value<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ObjectValue {
-    pub fields: Vec<ObjectField>,
+#[derive(Debug, PartialEq)]
+pub struct ObjectValue<'a> {
+    pub fields: AstVec<'a, ObjectField<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ObjectField {
-    pub name: Name,
-    pub value: Option<Value>,
+#[derive(Debug, PartialEq)]
+pub struct ObjectField<'a> {
+    pub name: Name<'a>,
+    pub value: Option<Value<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
-    Named(NamedType),
-    List(ListType),
-    NonNull(NonNullType),
+#[derive(Debug, PartialEq)]
+pub enum Type<'a> {
+    Named(NamedType<'a>),
+    List(ListType<'a>),
+    NonNull(NonNullType<'a>),
     Missing(Span),
 }
 
-impl Type {
+impl Type<'_> {
     pub fn span(&self) -> Span {
         match self {
             Self::Named(value) => value.name.span,
@@ -348,189 +350,201 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NamedType {
-    pub name: Name,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NamedType<'a> {
+    pub name: Name<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ListType {
-    pub ty: Box<Type>,
+#[derive(Debug)]
+pub struct ListType<'a> {
+    pub ty: AstBox<'a, Type<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct NonNullType {
-    pub ty: Box<Type>,
+impl PartialEq for ListType<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ty.as_ref() == other.ty.as_ref() && self.span == other.span
+    }
+}
+
+#[derive(Debug)]
+pub struct NonNullType<'a> {
+    pub ty: AstBox<'a, Type<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SchemaDefinition {
-    pub description: Option<StringValue>,
-    pub directives: Vec<Directive>,
-    pub root_operations: Vec<RootOperationTypeDefinition>,
+impl PartialEq for NonNullType<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ty.as_ref() == other.ty.as_ref() && self.span == other.span
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SchemaDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub root_operations: AstVec<'a, RootOperationTypeDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SchemaExtension {
-    pub directives: Vec<Directive>,
-    pub root_operations: Vec<RootOperationTypeDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct SchemaExtension<'a> {
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub root_operations: AstVec<'a, RootOperationTypeDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RootOperationTypeDefinition {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RootOperationTypeDefinition<'a> {
     pub operation_type: OperationType,
-    pub named_type: NamedType,
+    pub named_type: NamedType<'a>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DirectiveDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub arguments: Vec<InputValueDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct DirectiveDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub arguments: AstVec<'a, InputValueDefinition<'a>>,
     pub repeatable: bool,
-    pub locations: Vec<DirectiveLocation>,
+    pub locations: AstVec<'a, DirectiveLocation<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DirectiveLocation {
-    pub name: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DirectiveLocation<'a> {
+    pub name: &'a str,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScalarTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct ScalarTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScalarTypeExtension {
-    pub name: Name,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct ScalarTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ObjectTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub interfaces: Vec<NamedType>,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<FieldDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct ObjectTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub interfaces: AstVec<'a, NamedType<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, FieldDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ObjectTypeExtension {
-    pub name: Name,
-    pub interfaces: Vec<NamedType>,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<FieldDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct ObjectTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub interfaces: AstVec<'a, NamedType<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, FieldDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InterfaceTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub interfaces: Vec<NamedType>,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<FieldDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct InterfaceTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub interfaces: AstVec<'a, NamedType<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, FieldDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InterfaceTypeExtension {
-    pub name: Name,
-    pub interfaces: Vec<NamedType>,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<FieldDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct InterfaceTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub interfaces: AstVec<'a, NamedType<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, FieldDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnionTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub members: Vec<NamedType>,
+#[derive(Debug, PartialEq)]
+pub struct UnionTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub members: AstVec<'a, NamedType<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnionTypeExtension {
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub members: Vec<NamedType>,
+#[derive(Debug, PartialEq)]
+pub struct UnionTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub members: AstVec<'a, NamedType<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub values: Vec<EnumValueDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct EnumTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub values: AstVec<'a, EnumValueDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumTypeExtension {
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub values: Vec<EnumValueDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct EnumTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub values: AstVec<'a, EnumValueDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumValueDefinition {
-    pub description: Option<StringValue>,
-    pub value: EnumValue,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct EnumValueDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub value: EnumValue<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InputObjectTypeDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<InputValueDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct InputObjectTypeDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, InputValueDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InputObjectTypeExtension {
-    pub name: Name,
-    pub directives: Vec<Directive>,
-    pub fields: Vec<InputValueDefinition>,
+#[derive(Debug, PartialEq)]
+pub struct InputObjectTypeExtension<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
+    pub fields: AstVec<'a, InputValueDefinition<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FieldDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub arguments: Vec<InputValueDefinition>,
-    pub ty: Option<Type>,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct FieldDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub arguments: AstVec<'a, InputValueDefinition<'a>>,
+    pub ty: Option<Type<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InputValueDefinition {
-    pub description: Option<StringValue>,
-    pub name: Name,
-    pub ty: Option<Type>,
-    pub default_value: Option<Value>,
-    pub directives: Vec<Directive>,
+#[derive(Debug, PartialEq)]
+pub struct InputValueDefinition<'a> {
+    pub description: Option<StringValue<'a>>,
+    pub name: Name<'a>,
+    pub ty: Option<Type<'a>>,
+    pub default_value: Option<Value<'a>>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
