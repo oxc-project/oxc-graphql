@@ -1,27 +1,19 @@
 use crate::Error;
-use std::str::CharIndices;
 
-/// Peekable iterator over a char sequence.
+/// Byte cursor over GraphQL source text.
 #[derive(Debug, Clone)]
 pub(crate) struct Cursor<'a> {
     index: usize,
     pub(super) offset: usize,
     pub(super) source: &'a str,
-    chars: CharIndices<'a>,
-    pending: Option<char>,
+    bytes: &'a [u8],
+    next: usize,
     pub(crate) err: Option<Error>,
 }
 
 impl<'a> Cursor<'a> {
     pub(crate) fn new(input: &'a str) -> Cursor<'a> {
-        Cursor {
-            index: 0,
-            offset: 0,
-            pending: None,
-            source: input,
-            chars: input.char_indices(),
-            err: None,
-        }
+        Cursor { index: 0, offset: 0, source: input, bytes: input.as_bytes(), next: 0, err: None }
     }
 }
 
@@ -31,72 +23,63 @@ impl<'a> Cursor<'a> {
         self.index
     }
 
-    /// Return true if the current state is pending.
-    pub(crate) fn is_pending(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    /// Moves to the next character.
+    /// Returns the token text before the last consumed byte and rewinds to it.
     pub(crate) fn prev_str(&mut self) -> &'a str {
         let slice = &self.source[self.index..self.offset];
 
         self.index = self.offset;
-        self.pending = self.source.get(self.offset..).and_then(|subslice| subslice.chars().next());
+        self.next = self.offset;
 
         slice
     }
 
-    /// Moves to the next character.
+    /// Returns the token text through the last consumed byte.
     pub(crate) fn current_str(&mut self) -> &'a str {
-        self.pending = None;
-
-        if let Some((pos, next)) = self.chars.next() {
-            let current = self.index;
-
-            self.index = pos;
-            self.offset = pos;
-            self.pending = Some(next);
-
-            self.source.get(current..pos)
-        } else {
-            let current = self.index;
-            self.index = self.source.len() - 1;
-
-            self.source.get(current..)
-        }
-        .unwrap()
+        let slice = &self.source[self.index..self.next];
+        // Preserve the previous EOF-adjacent cursor position used by token-limit diagnostics.
+        self.index =
+            if self.next == self.source.len() && self.next > 0 { self.next - 1 } else { self.next };
+        slice
     }
 
-    /// Moves to the next character.
-    pub(crate) fn bump(&mut self) -> Option<char> {
-        if self.pending.is_some() {
-            return self.pending.take();
-        }
-
-        if self.offset == self.source.len() {
+    /// Moves to the next byte.
+    pub(crate) fn bump(&mut self) -> Option<u8> {
+        if self.next == self.bytes.len() {
             return None;
         }
 
-        let (pos, c) = self.chars.next()?;
-        self.offset = pos;
+        let c = self.bytes[self.next];
+        self.offset = self.next;
+        self.next += 1;
 
         Some(c)
     }
 
-    /// Moves to the next character.
-    pub(crate) fn eatc(&mut self, c: char) -> bool {
-        if self.pending.is_some() {
-            panic!("dont call eatc when a character is pending");
+    /// Consumes the next byte if it matches.
+    pub(crate) fn eatc(&mut self, c: u8) -> bool {
+        if self.next < self.bytes.len() && self.bytes[self.next] == c {
+            self.offset = self.next;
+            self.next += 1;
+            return true;
         }
 
-        if let Some((pos, c_in)) = self.chars.next() {
-            self.offset = pos;
+        false
+    }
 
-            if c_in == c {
-                return true;
-            }
+    /// Consumes the rest of the UTF-8 scalar at the current byte offset.
+    pub(crate) fn consume_current_char(&mut self) -> char {
+        let c = self.source[self.offset..].chars().next().unwrap();
+        self.next = self.offset + c.len_utf8();
+        c
+    }
 
-            self.pending = Some(c_in);
+    /// Consumes a Unicode byte order mark at the current byte offset.
+    pub(crate) fn eat_bom(&mut self) -> bool {
+        const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+        if self.bytes[self.offset..].starts_with(BOM) {
+            self.next = self.offset + BOM.len();
+            return true;
         }
 
         false
@@ -107,13 +90,13 @@ impl<'a> Cursor<'a> {
         self.err.clone()
     }
 
-    /// Drains the current pending characters.
+    /// Drains the current token to the end of the source.
     pub(crate) fn drain(&mut self) -> &'a str {
-        self.pending = None;
         let start = self.index;
-        self.index = self.source.len() - 1;
+        self.index = self.source.len();
+        self.next = self.source.len();
 
-        self.source.get(start..=self.index).unwrap()
+        self.source.get(start..).unwrap()
     }
 
     /// Add error object to the cursor.

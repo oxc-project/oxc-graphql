@@ -4,13 +4,13 @@ static PUNCTUATION_CHARS: [Option<TokenKind>; 256] = punctuation_lut();
 static NAMESTART_CHARS: [bool; 256] = namestart_lut();
 
 #[inline]
-pub(crate) fn punctuation_kind(c: char) -> Option<TokenKind> {
-    if c.is_ascii() { PUNCTUATION_CHARS[c as usize] } else { None }
+pub(crate) fn punctuation_kind(c: u8) -> Option<TokenKind> {
+    PUNCTUATION_CHARS[c as usize]
 }
 
 #[inline]
-pub(crate) fn is_namestart(c: char) -> bool {
-    c.is_ascii() && NAMESTART_CHARS[c as usize]
+pub(crate) fn is_namestart(c: u8) -> bool {
+    NAMESTART_CHARS[c as usize]
 }
 
 const fn punctuation_lut() -> [Option<TokenKind>; 256] {
