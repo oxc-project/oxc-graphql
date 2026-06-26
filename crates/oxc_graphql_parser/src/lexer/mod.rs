@@ -157,7 +157,7 @@ impl<'a> Cursor<'a> {
                         continue;
                     }
 
-                    if c != '0' && c.is_ascii_digit() {
+                    if c != b'0' && c.is_ascii_digit() {
                         token.kind = TokenKind::Int;
                         state = State::IntegerPart;
 
@@ -165,31 +165,32 @@ impl<'a> Cursor<'a> {
                     }
 
                     match c {
-                        '"' => {
+                        b'"' => {
                             token.kind = TokenKind::StringValue;
                             state = State::StringLiteralStart;
                         }
-                        '#' => {
+                        b'#' => {
                             token.kind = TokenKind::Comment;
                             state = State::Comment;
                         }
-                        '.' => {
+                        b'.' => {
                             token.kind = TokenKind::Spread;
                             state = State::SpreadOperator;
                         }
-                        '-' => {
+                        b'-' => {
                             token.kind = TokenKind::Int;
                             state = State::MinusSign;
                         }
-                        '0' => {
+                        b'0' => {
                             token.kind = TokenKind::Int;
                             state = State::LeadingZero;
                         }
-                        c if is_whitespace_assimilated(c) => {
+                        c if is_whitespace_assimilated(c) || (c == 0xEF && self.eat_bom()) => {
                             token.kind = TokenKind::Whitespace;
                             state = State::Whitespace;
                         }
                         c => {
+                            let c = self.char_for_error(c);
                             return Err(Error::with_loc(
                                 format!(r#"Unexpected character "{c}""#),
                                 self.current_str().to_string(),
@@ -206,40 +207,37 @@ impl<'a> Cursor<'a> {
                     }
                 },
                 State::Whitespace => match c {
-                    curr if is_whitespace_assimilated(curr) => {}
+                    curr if is_whitespace_assimilated(curr) || (curr == 0xEF && self.eat_bom()) => {
+                    }
                     _ => {
                         token.data = self.prev_str();
                         return self.done(token);
                     }
                 },
                 State::BlockStringLiteral => match c {
-                    '\\' => {
+                    b'\\' => {
                         state = State::BlockStringLiteralBackslash;
                     }
-                    '"'
+                    b'"'
                         // Require two additional quotes to complete the triple quote.
-                        if self.eatc('"') && self.eatc('"') => {
+                        if self.eatc(b'"') && self.eatc(b'"') => {
                             token.data = self.current_str();
                             return self.done(token);
                         }
                     _ => {}
                 },
                 State::StringLiteralStart => match c {
-                    '"' => {
-                        if self.eatc('"') {
+                    b'"' => {
+                        if self.eatc(b'"') {
                             state = State::BlockStringLiteral;
 
                             continue;
                         }
 
-                        if self.is_pending() {
-                            token.data = self.prev_str();
-                        } else {
-                            token.data = self.current_str();
-                        }
+                        token.data = self.current_str();
                         return self.done(token);
                     }
-                    '\\' => {
+                    b'\\' => {
                         state = State::StringLiteralBackslash;
                     }
                     _ => {
@@ -249,10 +247,10 @@ impl<'a> Cursor<'a> {
                     }
                 },
                 State::StringLiteralEscapedUnicode(remaining) => match c {
-                    '"' => {
+                    b'"' => {
                         self.add_err(Error::with_loc(
                             "incomplete unicode escape sequence",
-                            c.to_string(),
+                            char::from(c).to_string(),
                             token.index,
                         ));
                         token.data = self.current_str();
@@ -297,7 +295,7 @@ impl<'a> Cursor<'a> {
                     }
                 },
                 State::StringLiteral => match c {
-                    '"' => {
+                    b'"' => {
                         token.data = self.current_str();
                         return self.done(token);
                     }
@@ -308,24 +306,24 @@ impl<'a> Cursor<'a> {
                             0,
                         ));
                     }
-                    '\\' => {
+                    b'\\' => {
                         state = State::StringLiteralBackslash;
                     }
                     _ => {}
                 },
                 State::BlockStringLiteralBackslash => match c {
-                    '"' => {
+                    b'"' => {
                         // If this is \""", we need to eat 3 in total, and then continue parsing.
                         // The lexer does not un-escape escape sequences so it's OK
                         // if we take this path for \"", even if that is technically not an escape
                         // sequence.
-                        if self.eatc('"') {
-                            self.eatc('"');
+                        if self.eatc(b'"') {
+                            self.eatc(b'"');
                         }
 
                         state = State::BlockStringLiteral;
                     }
-                    '\\' => {
+                    b'\\' => {
                         // We need to stay in the backslash state:
                         // it's legal to write \\\""" with two literal backslashes
                         // and then the escape sequence.
@@ -338,10 +336,11 @@ impl<'a> Cursor<'a> {
                     curr if is_escaped_char(curr) => {
                         state = State::StringLiteral;
                     }
-                    'u' => {
+                    b'u' => {
                         state = State::StringLiteralEscapedUnicode(4);
                     }
                     _ => {
+                        let c = self.char_for_error(c);
                         self.add_err(Error::with_loc(
                             "unexpected escaped character",
                             c.to_string(),
@@ -352,11 +351,11 @@ impl<'a> Cursor<'a> {
                     }
                 },
                 State::LeadingZero => match c {
-                    '.' => {
+                    b'.' => {
                         token.kind = TokenKind::Float;
                         state = State::DecimalPoint;
                     }
-                    'e' | 'E' => {
+                    b'e' | b'E' => {
                         token.kind = TokenKind::Float;
                         state = State::ExponentIndicator;
                     }
@@ -368,6 +367,7 @@ impl<'a> Cursor<'a> {
                         ));
                     }
                     _ if lookup::is_namestart(c) => {
+                        let c = char::from(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}` as integer suffix"),
                             self.current_str().to_string(),
@@ -381,15 +381,16 @@ impl<'a> Cursor<'a> {
                 },
                 State::IntegerPart => match c {
                     curr if curr.is_ascii_digit() => {}
-                    '.' => {
+                    b'.' => {
                         token.kind = TokenKind::Float;
                         state = State::DecimalPoint;
                     }
-                    'e' | 'E' => {
+                    b'e' | b'E' => {
                         token.kind = TokenKind::Float;
                         state = State::ExponentIndicator;
                     }
                     _ if lookup::is_namestart(c) => {
+                        let c = char::from(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}` as integer suffix"),
                             self.current_str().to_string(),
@@ -406,6 +407,7 @@ impl<'a> Cursor<'a> {
                         state = State::FractionalPart;
                     }
                     _ => {
+                        let c = self.char_for_error(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}`, expected fractional digit"),
                             self.current_str().to_string(),
@@ -415,10 +417,11 @@ impl<'a> Cursor<'a> {
                 },
                 State::FractionalPart => match c {
                     curr if curr.is_ascii_digit() => {}
-                    'e' | 'E' => {
+                    b'e' | b'E' => {
                         state = State::ExponentIndicator;
                     }
-                    _ if c == '.' || lookup::is_namestart(c) => {
+                    _ if c == b'.' || lookup::is_namestart(c) => {
+                        let c = char::from(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}` as float suffix"),
                             self.current_str().to_string(),
@@ -434,10 +437,11 @@ impl<'a> Cursor<'a> {
                     _ if c.is_ascii_digit() => {
                         state = State::ExponentDigit;
                     }
-                    '+' | '-' => {
+                    b'+' | b'-' => {
                         state = State::ExponentSign;
                     }
                     _ => {
+                        let c = self.char_for_error(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}`, expected exponent digit or sign"),
                             self.current_str().to_string(),
@@ -450,6 +454,7 @@ impl<'a> Cursor<'a> {
                         state = State::ExponentDigit;
                     }
                     _ => {
+                        let c = self.char_for_error(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}`, expected exponent digit"),
                             self.current_str().to_string(),
@@ -461,7 +466,8 @@ impl<'a> Cursor<'a> {
                     _ if c.is_ascii_digit() => {
                         state = State::ExponentDigit;
                     }
-                    _ if c == '.' || lookup::is_namestart(c) => {
+                    _ if c == b'.' || lookup::is_namestart(c) => {
+                        let c = char::from(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}` as float suffix"),
                             self.current_str().to_string(),
@@ -474,20 +480,21 @@ impl<'a> Cursor<'a> {
                     }
                 },
                 State::SpreadOperator => {
-                    if c == '.' && self.eatc('.') {
+                    if c == b'.' && self.eatc(b'.') {
                         token.data = self.current_str();
                         return Ok(token);
                     }
                     return self.unterminated_spread_operator(&token);
                 }
                 State::MinusSign => match c {
-                    '0' => {
+                    b'0' => {
                         state = State::LeadingZero;
                     }
                     curr if curr.is_ascii_digit() => {
                         state = State::IntegerPart;
                     }
                     _ => {
+                        let c = self.char_for_error(c);
                         return Err(Error::with_loc(
                             format!("Unexpected character `{c}`"),
                             self.current_str().to_string(),
@@ -504,6 +511,10 @@ impl<'a> Cursor<'a> {
                 },
             }
         }
+    }
+
+    fn char_for_error(&mut self, c: u8) -> char {
+        if c.is_ascii() { char::from(c) } else { self.consume_current_char() }
     }
 
     fn eof(&mut self, state: State, mut token: Token<'a>) -> Result<Token<'a>, Error> {
@@ -566,7 +577,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn unterminated_spread_operator(&mut self, token: &Token<'a>) -> Result<Token<'a>, Error> {
-        let data = if self.is_pending() { self.prev_str() } else { self.current_str() };
+        let data = self.current_str();
 
         Err(Error::with_loc("Unterminated spread operator", data.to_string(), token.index))
     }
@@ -584,33 +595,31 @@ impl<'a> Cursor<'a> {
 
 /// Ignored tokens other than comments and commas are assimilated to whitespace
 /// <https://spec.graphql.org/October2021/#Ignored>
-fn is_whitespace_assimilated(c: char) -> bool {
+fn is_whitespace_assimilated(c: u8) -> bool {
     matches!(
         c,
         // https://spec.graphql.org/October2021/#WhiteSpace
-        '\u{0009}'   // \t
-        | '\u{0020}' // space
+        b'\t'
+        | b' '
         // https://spec.graphql.org/October2021/#LineTerminator
-        | '\u{000A}' // \n
-        | '\u{000D}' // \r
-        // https://spec.graphql.org/October2021/#UnicodeBOM
-        | '\u{FEFF}' // Unicode BOM (Byte Order Mark)
+        | b'\n'
+        | b'\r'
     )
 }
 
 /// <https://spec.graphql.org/October2021/#NameContinue>
-fn is_name_continue(c: char) -> bool {
-    matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')
+fn is_name_continue(c: u8) -> bool {
+    matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
 }
 
-fn is_line_terminator(c: char) -> bool {
-    matches!(c, '\n' | '\r')
+fn is_line_terminator(c: u8) -> bool {
+    matches!(c, b'\n' | b'\r')
 }
 
 // EscapedCharacter
 //     "  \  /  b  f  n  r  t
-fn is_escaped_char(c: char) -> bool {
-    matches!(c, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')
+fn is_escaped_char(c: u8) -> bool {
+    matches!(c, b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't')
 }
 
 #[cfg(test)]
