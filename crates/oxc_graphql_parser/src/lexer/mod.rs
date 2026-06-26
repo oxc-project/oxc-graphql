@@ -37,7 +37,6 @@ pub struct Lexer<'a> {
 #[derive(Debug)]
 enum State {
     Start,
-    Ident,
     StringLiteralEscapedUnicode(usize),
     StringLiteral,
     StringLiteralStart,
@@ -153,9 +152,8 @@ impl<'a> Cursor<'a> {
 
                     if lookup::is_namestart(c) {
                         token.kind = TokenKind::Name;
-                        state = State::Ident;
-
-                        continue;
+                        token.data = self.consume_name();
+                        return self.done(token);
                     }
 
                     if c != b'0' && c.is_ascii_digit() {
@@ -200,13 +198,6 @@ impl<'a> Cursor<'a> {
                         }
                     };
                 }
-                State::Ident => match c {
-                    curr if is_name_continue(curr) => {}
-                    _ => {
-                        token.data = self.prev_str();
-                        return self.done(token);
-                    }
-                },
                 State::Whitespace => match c {
                     curr if is_whitespace_assimilated(curr) || (curr == 0xEF && self.eat_bom()) => {
                     }
@@ -558,8 +549,7 @@ impl<'a> Cursor<'a> {
                     token.index,
                 ))
             }
-            State::Ident
-            | State::LeadingZero
+            State::LeadingZero
             | State::IntegerPart
             | State::FractionalPart
             | State::ExponentDigit

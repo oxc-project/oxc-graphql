@@ -23,6 +23,29 @@ impl<'a> Cursor<'a> {
         self.index
     }
 
+    /// Consumes the remaining bytes of a name token and returns its full text.
+    ///
+    /// The first name byte is already consumed by `bump` in `State::Start`; this
+    /// scans the rest of the name in a tight loop over the raw bytes, avoiding
+    /// the per-byte state-machine dispatch of the main lexer loop. It leaves the
+    /// cursor in the exact position the per-byte path would: stopped before the
+    /// terminator (mirroring `prev_str`), or at end of input with the
+    /// EOF-adjacent index preserved for token-limit diagnostics (mirroring
+    /// `current_str`).
+    pub(super) fn consume_name(&mut self) -> &'a str {
+        let len = self.bytes.len();
+        let mut end = self.next;
+        while end < len && super::is_name_continue(self.bytes[end]) {
+            end += 1;
+        }
+
+        let slice = &self.source[self.index..end];
+        self.index = if end == len && end > 0 { end - 1 } else { end };
+        self.offset = end;
+        self.next = end;
+        slice
+    }
+
     /// Returns the token text before the last consumed byte and rewinds to it.
     pub(crate) fn prev_str(&mut self) -> &'a str {
         let slice = &self.source[self.index..self.offset];
