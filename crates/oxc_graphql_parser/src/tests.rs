@@ -95,6 +95,34 @@ fn parser_err_fixtures_have_errors() {
     }
 }
 
+#[test]
+#[ignore]
+fn ecosystem_graphql_corpus_has_no_parse_errors() {
+    let root = std::env::var_os("OXC_GRAPHQL_ECOSYSTEM_REPOS")
+        .map(PathBuf::from)
+        .expect("set OXC_GRAPHQL_ECOSYSTEM_REPOS to an ecosystem-ci repos directory");
+    let mut files = Vec::new();
+    collect_graphql_files(&root, &mut files);
+
+    let mut failures = Vec::new();
+    for path in &files {
+        let source = fs::read_to_string(path).unwrap();
+        let ast = Parser::new(&source).parse();
+        let errors = ast.errors().collect::<Vec<_>>();
+        if !errors.is_empty() {
+            failures.push(format!("{}: {errors:?}", path.display()));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} ecosystem GraphQL files failed to parse:\n{}",
+        failures.len(),
+        files.len(),
+        failures.join("\n")
+    );
+}
+
 fn collect_variables<'a>(selection_set: &'a ast::SelectionSet, output: &mut Vec<&'a str>) {
     for selection in &selection_set.selections {
         if let ast::Selection::Field(field) = selection {
@@ -135,4 +163,25 @@ fn graphql_files(path: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>();
     files.sort();
     files
+}
+
+fn collect_graphql_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if matches!(name, ".git" | "node_modules" | "target") {
+                continue;
+            }
+            collect_graphql_files(&path, files);
+        } else if path
+            .extension()
+            .is_some_and(|extension| matches!(extension.to_str(), Some("gql" | "graphql")))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
 }
