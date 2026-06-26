@@ -108,6 +108,37 @@ impl<'a> Cursor<'a> {
         false
     }
 
+    /// Consumes the remaining bytes of a whitespace run and returns its text.
+    ///
+    /// The first whitespace unit is already consumed in `State::Start`; this
+    /// scans the rest of the run in a tight loop over the raw bytes (assimilated
+    /// whitespace plus byte-order marks), avoiding the per-byte state-machine
+    /// dispatch of the main lexer loop. It leaves the cursor exactly where the
+    /// per-byte path would: stopped before the terminator (mirroring `prev_str`),
+    /// or at end of input with the EOF-adjacent index preserved for token-limit
+    /// diagnostics (mirroring `current_str`).
+    pub(super) fn consume_whitespace(&mut self) -> &'a str {
+        const BOM: &[u8] = b"\xEF\xBB\xBF";
+        let len = self.bytes.len();
+        let mut end = self.next;
+        while end < len {
+            let byte = self.bytes[end];
+            if super::is_whitespace_assimilated(byte) {
+                end += 1;
+            } else if byte == 0xEF && self.bytes[end..].starts_with(BOM) {
+                end += BOM.len();
+            } else {
+                break;
+            }
+        }
+
+        let slice = &self.source[self.index..end];
+        self.index = if end == len && end > 0 { end - 1 } else { end };
+        self.offset = end;
+        self.next = end;
+        slice
+    }
+
     /// Drains the current token to the end of the source.
     pub(crate) fn drain(&mut self) -> &'a str {
         let start = self.index;

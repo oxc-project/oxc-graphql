@@ -50,7 +50,6 @@ enum State {
     ExponentIndicator,
     ExponentSign,
     ExponentDigit,
-    Whitespace,
     Comment,
     SpreadOperator,
     MinusSign,
@@ -186,7 +185,8 @@ impl<'a> Cursor<'a> {
                         }
                         c if is_whitespace_assimilated(c) || (c == 0xEF && self.eat_bom()) => {
                             token.kind = TokenKind::Whitespace;
-                            state = State::Whitespace;
+                            token.data = self.consume_whitespace();
+                            return self.done(token);
                         }
                         c => {
                             let c = self.char_for_error(c);
@@ -198,14 +198,6 @@ impl<'a> Cursor<'a> {
                         }
                     };
                 }
-                State::Whitespace => match c {
-                    curr if is_whitespace_assimilated(curr) || (curr == 0xEF && self.eat_bom()) => {
-                    }
-                    _ => {
-                        token.data = self.prev_str();
-                        return self.done(token);
-                    }
-                },
                 State::BlockStringLiteral => match c {
                     b'\\' => {
                         state = State::BlockStringLiteralBackslash;
@@ -553,7 +545,6 @@ impl<'a> Cursor<'a> {
             | State::IntegerPart
             | State::FractionalPart
             | State::ExponentDigit
-            | State::Whitespace
             | State::Comment => {
                 if let Some(mut err) = self.err.take() {
                     err.set_data(self.current_str().to_string());
