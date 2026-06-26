@@ -85,11 +85,6 @@ impl<'a> Cursor<'a> {
         false
     }
 
-    /// Get current error object in the cursor.
-    pub(crate) fn err(&mut self) -> Option<Error> {
-        self.err.clone()
-    }
-
     /// Drains the current token to the end of the source.
     pub(crate) fn drain(&mut self) -> &'a str {
         let start = self.index;
