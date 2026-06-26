@@ -51,5 +51,4 @@ jobs:
         timeout-minutes: 15
         with:
           mode: simulation
-          mode: instrumentation
           run: cargo codspeed run
