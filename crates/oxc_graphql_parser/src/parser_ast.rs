@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
     }
 
     fn new_vec<T>(&self) -> ArenaVec<'a, T> {
-        ArenaVec::new_in(self.allocator)
+        ArenaVec::new_in(&self.allocator)
     }
 
     fn parse_document(&mut self) -> Document<'a> {
@@ -657,7 +657,7 @@ impl<'a> Parser<'a> {
                 self.recursion_limit.decrement();
                 self.expect(T![']'], "expected ]");
                 Type::List(ListType {
-                    ty: ArenaBox::new_in(inner, self.allocator),
+                    ty: ArenaBox::new_in(inner, &self.allocator),
                     span: self.span_from(start),
                 })
             }
@@ -675,7 +675,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(T![!]) {
             self.bump();
             ty = Type::NonNull(NonNullType {
-                ty: ArenaBox::new_in(ty, self.allocator),
+                ty: ArenaBox::new_in(ty, &self.allocator),
                 span: self.span_from(start),
             });
         }
