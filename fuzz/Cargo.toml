@@ -5,6 +5,7 @@ publish = false
 autotests = false
 edition = "2024"
 rust-version = "1.96.0"
+license = "MIT OR Apache-2.0"
 
 [package.metadata]
 cargo-fuzz = true
