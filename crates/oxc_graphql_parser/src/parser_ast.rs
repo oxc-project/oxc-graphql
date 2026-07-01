@@ -14,7 +14,7 @@ pub struct Parser<'a> {
     recursion_limit: LimitTracker,
     accept_errors: bool,
     allow_executable_descriptions: bool,
-    allow_legacy_fragment_variables: bool,
+    experimental_fragment_arguments: bool,
     last_end: u32,
     /// Reusable scratch stack for building AST lists. List elements are
     /// collected here and copied into the arena once, at the exact final
@@ -66,7 +66,7 @@ impl<'a> Parser<'a> {
             recursion_limit: LimitTracker::new(DEFAULT_RECURSION_LIMIT),
             accept_errors: true,
             allow_executable_descriptions: false,
-            allow_legacy_fragment_variables: false,
+            experimental_fragment_arguments: false,
             last_end: 0,
             scratch: Vec::new(),
         }
@@ -87,8 +87,8 @@ impl<'a> Parser<'a> {
         self
     }
 
-    pub fn allow_legacy_fragment_variables(mut self, allow: bool) -> Self {
-        self.allow_legacy_fragment_variables = allow;
+    pub fn experimental_fragment_arguments(mut self, allow: bool) -> Self {
+        self.experimental_fragment_arguments = allow;
         self
     }
 
@@ -310,7 +310,7 @@ impl<'a> Parser<'a> {
         self.expect_name_value("fragment");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment"));
 
-        let variable_definitions = if self.allow_legacy_fragment_variables {
+        let variable_definitions = if self.experimental_fragment_arguments {
             self.parse_variable_definitions_if_present()
         } else {
             self.new_vec()
@@ -427,8 +427,18 @@ impl<'a> Parser<'a> {
         }
 
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment spread"));
+        let arguments = if self.experimental_fragment_arguments {
+            self.parse_arguments_if_present(Constness::NotConst)
+        } else {
+            self.new_vec()
+        };
         let directives = self.parse_directives(Constness::NotConst);
-        Selection::FragmentSpread(FragmentSpread { name, directives, span: self.span_from(start) })
+        Selection::FragmentSpread(FragmentSpread {
+            name,
+            arguments,
+            directives,
+            span: self.span_from(start),
+        })
     }
 
     fn parse_field(&mut self) -> Field<'a> {
