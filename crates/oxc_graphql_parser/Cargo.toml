@@ -1,6 +1,6 @@
 [package]
 name = "oxc-graphql-parser"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.96.0"
 license = "MIT OR Apache-2.0"
