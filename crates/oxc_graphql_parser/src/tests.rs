@@ -300,12 +300,10 @@ extend type T {
 }
 
 #[test]
-fn parser_parses_experimental_directives_on_directive_definitions() {
+fn parser_parses_directives_on_directive_definitions() {
     let source = "directive @foo @bar @baz on FIELD";
     let allocator = Allocator::default();
-    let ast = Parser::new(&allocator, source)
-        .experimental_directives_on_directive_definitions(true)
-        .parse();
+    let ast = Parser::new(&allocator, source).parse();
     assert_eq!(ast.errors().len(), 0);
 
     let ast::Definition::Directive(directive) = &ast.document().definitions[0] else {
@@ -318,20 +316,10 @@ fn parser_parses_experimental_directives_on_directive_definitions() {
 }
 
 #[test]
-fn parser_rejects_directives_on_directive_definitions_without_flag() {
-    let source = "directive @foo @bar on FIELD";
-    let allocator = Allocator::default();
-    let ast = Parser::new(&allocator, source).parse();
-    assert!(ast.errors().len() > 0);
-}
-
-#[test]
-fn parser_parses_experimental_directive_extension() {
+fn parser_parses_directive_extension() {
     let source = "extend directive @foo @bar @baz";
     let allocator = Allocator::default();
-    let ast = Parser::new(&allocator, source)
-        .experimental_directives_on_directive_definitions(true)
-        .parse();
+    let ast = Parser::new(&allocator, source).parse();
     assert_eq!(ast.errors().len(), 0);
 
     let ast::Definition::DirectiveExtension(extension) = &ast.document().definitions[0] else {
@@ -347,18 +335,23 @@ fn parser_parses_experimental_directive_extension() {
 fn parser_rejects_empty_directive_extension() {
     let source = "extend directive @foo";
     let allocator = Allocator::default();
-    let ast = Parser::new(&allocator, source)
-        .experimental_directives_on_directive_definitions(true)
-        .parse();
+    let ast = Parser::new(&allocator, source).parse();
     assert!(ast.errors().len() > 0);
 }
 
 #[test]
-fn parser_rejects_directive_extension_without_flag() {
-    let source = "extend directive @foo @bar";
+fn parser_parses_variable_definition_descriptions() {
+    let source = r#"query Q("""the id""" $id: ID!) { node(id: $id) { name } }"#;
     let allocator = Allocator::default();
     let ast = Parser::new(&allocator, source).parse();
-    assert!(ast.errors().len() > 0);
+    assert_eq!(ast.errors().len(), 0);
+
+    let ast::Definition::Operation(operation) = &ast.document().definitions[0] else {
+        panic!("expected operation definition");
+    };
+    assert_eq!(operation.variable_definitions.len(), 1);
+    let description = operation.variable_definitions[0].description.as_ref().unwrap();
+    assert_eq!(description.value, "the id");
 }
 
 #[test]
