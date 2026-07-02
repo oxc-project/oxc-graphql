@@ -40,10 +40,13 @@ pub(crate) enum ErrorData {
 }
 
 impl ErrorData {
-    pub fn len(&self) -> usize {
+    #[expect(clippy::cast_possible_truncation)]
+    pub fn len(&self) -> u32 {
         match self {
             Self::Eof | Self::LimitExceeded => 0,
-            Self::Text(text) => text.len(),
+            // Error data is derived from the source text, which `Lexer::new`
+            // asserts fits in `u32`.
+            Self::Text(text) => text.len() as u32,
         }
     }
 }
@@ -63,20 +66,20 @@ impl fmt::Display for ErrorData {
 pub struct Error {
     pub(crate) message: String,
     pub(crate) data: ErrorData,
-    pub(crate) index: usize,
+    pub(crate) index: u32,
 }
 
 impl Error {
     /// Create a new instance of `Error` with a `Location`.
-    pub fn with_loc<S: Into<String>>(message: S, data: String, index: usize) -> Self {
+    pub fn with_loc<S: Into<String>>(message: S, data: String, index: u32) -> Self {
         Self { message: message.into(), data: ErrorData::Text(data), index }
     }
 
-    pub fn limit<S: Into<String>>(message: S, index: usize) -> Self {
+    pub fn limit<S: Into<String>>(message: S, index: u32) -> Self {
         Self { message: message.into(), data: ErrorData::LimitExceeded, index }
     }
 
-    pub fn eof<S: Into<String>>(message: S, index: usize) -> Self {
+    pub fn eof<S: Into<String>>(message: S, index: u32) -> Self {
         Self { message: message.into(), data: ErrorData::Eof, index }
     }
 
@@ -103,7 +106,7 @@ impl Error {
 
     /// Get a reference to the error's index. This is where the error begins in
     /// a given input.
-    pub fn index(&self) -> usize {
+    pub fn index(&self) -> u32 {
         self.index
     }
 

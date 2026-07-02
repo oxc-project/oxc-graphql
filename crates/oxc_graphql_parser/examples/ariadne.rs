@@ -30,7 +30,7 @@ fn parse_schema() {
     for err in ast.errors() {
         // We need to create a report and print that individually, as the error
         // slice can have many errors.
-        let start = err.index();
+        let start = err.index() as usize;
         let end = start + err.data().len();
         Report::build(ReportKind::Error, (file_name, start..end))
             .with_message(err.message())

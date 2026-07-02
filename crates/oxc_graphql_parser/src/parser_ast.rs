@@ -1387,11 +1387,7 @@ impl<'a> Parser<'a> {
     }
 
     fn limit_err<S: Into<String>>(&mut self, message: S) {
-        let index = if let Some(token) = self.peek_token() {
-            token.index()
-        } else {
-            self.last_end as usize
-        };
+        let index = if let Some(token) = self.peek_token() { token.index() } else { self.last_end };
         self.push_err(Error::limit(message, index));
         self.accept_errors = false;
     }
@@ -1462,7 +1458,7 @@ impl<'a> Parser<'a> {
         } else {
             self.next_significant_token()?
         };
-        self.last_end = span_index(token.index() + token.data().len());
+        self.last_end = token.end();
         Some(token)
     }
 
@@ -1489,7 +1485,7 @@ impl<'a> Parser<'a> {
     }
 
     fn current_start(&mut self) -> u32 {
-        if let Some(token) = self.peek_token() { span_index(token.index()) } else { self.last_end }
+        if let Some(token) = self.peek_token() { token.index() } else { self.last_end }
     }
 
     fn current_span(&mut self) -> Span {
@@ -1501,21 +1497,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Converts a byte index to a span offset.
-///
-/// `Parser::new` asserts the source text fits in `u32`, so token indexes are
-/// always in range.
-#[expect(clippy::cast_possible_truncation)]
-#[inline]
-fn span_index(index: usize) -> u32 {
-    debug_assert!(u32::try_from(index).is_ok());
-    index as u32
-}
-
 fn token_span(token: &Token<'_>) -> Span {
-    let start = span_index(token.index());
-    let end = span_index(token.index() + token.data().len());
-    Span::new(start, end)
+    Span::new(token.index(), token.end())
 }
 
 trait MissingNameContext {

@@ -5,7 +5,7 @@ mod token_kind;
 
 use crate::Error;
 use crate::LimitTracker;
-use crate::lexer::cursor::Cursor;
+use crate::lexer::cursor::{Cursor, source_offset};
 use crate::lexer::lookup::ByteClass;
 pub use token::Token;
 pub use token_kind::TokenKind;
@@ -66,7 +66,17 @@ impl<'a> Lexer<'a> {
     ///     }
     /// }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `input` is larger than 4 GiB: token and error byte offsets
+    /// are stored as `u32`.
     pub fn new(input: &'a str) -> Self {
+        assert!(
+            u32::try_from(input.len()).is_ok(),
+            "source text is too long for u32 offsets (max 4 GiB): {} bytes",
+            input.len()
+        );
         Self {
             cursor: Cursor::new(input),
             finished: false,
@@ -172,7 +182,7 @@ impl<'a> Cursor<'a> {
 
         let Some(c) = self.bump() else {
             // Report EOF at the end of the input rather than one byte past it.
-            let end = self.source.len();
+            let end = self.len();
             self.offset = end;
             token.index = end;
             return Ok(token);
@@ -226,7 +236,7 @@ impl<'a> Cursor<'a> {
     /// it. Returns `false` when the next token is significant. Comments are
     /// not skipped: callers record their spans, so they lex as normal tokens.
     fn skip_trivia(&mut self) -> bool {
-        let Some(&c) = self.bytes.get(self.next) else {
+        let Some(&c) = self.bytes.get(self.next as usize) else {
             return false;
         };
         match lookup::byte_class(c) {
@@ -262,7 +272,7 @@ impl<'a> Cursor<'a> {
         token.kind = TokenKind::Comment;
         let start = self.index;
         let end = self.seek_line_end();
-        token.data = &self.source[start..end];
+        token.data = &self.source[start as usize..end as usize];
         Ok(token)
     }
 
@@ -297,7 +307,7 @@ impl<'a> Cursor<'a> {
             return Ok(token);
         }
 
-        if self.next == self.bytes.len() {
+        if self.next == self.len() {
             // A lone `"` at the end of the input.
             return Err(Error::with_loc(
                 "unexpected end of data while lexing string value",
@@ -311,12 +321,15 @@ impl<'a> Cursor<'a> {
 
     fn lex_string(&mut self, mut token: Token<'a>) -> Result<Token<'a>, Error> {
         loop {
-            let Some(found) = memchr::memchr2(b'"', b'\\', &self.bytes[self.next..]) else {
+            let Some(found) = memchr::memchr2(b'"', b'\\', &self.bytes[self.next as usize..])
+            else {
                 return self.unterminated_string(&token);
             };
-            let stop = self.next + found;
+            let stop = self.next + source_offset(found);
 
-            if memchr::memchr2(b'\n', b'\r', &self.bytes[self.next..stop]).is_some() {
+            if memchr::memchr2(b'\n', b'\r', &self.bytes[self.next as usize..stop as usize])
+                .is_some()
+            {
                 self.add_err(Error::with_loc("unexpected line terminator", String::new(), 0));
             }
 
@@ -324,7 +337,7 @@ impl<'a> Cursor<'a> {
             self.offset = stop;
             self.next = stop + 1;
 
-            if self.bytes[stop] == b'"' {
+            if self.bytes[stop as usize] == b'"' {
                 token.data = self.current_str();
                 return self.done(token);
             }
@@ -360,7 +373,7 @@ impl<'a> Cursor<'a> {
                     if remaining == 1 {
                         let hex_end = self.offset + 1;
                         let hex_start = hex_end - 4;
-                        let hex = &self.source[hex_start..hex_end];
+                        let hex = &self.source[hex_start as usize..hex_end as usize];
                         // `is_ascii_hexdigit()` checks in previous iterations ensures
                         // this `unwrap()` does not panic:
                         let code_point = u32::from_str_radix(hex, 16).unwrap();
@@ -368,7 +381,8 @@ impl<'a> Cursor<'a> {
                             // TODO: https://github.com/oxc-project/oxc-graphql-parser/issues/657 needs
                             // changes both here and in `ast/node_ext.rs`
                             let escape_sequence_start = hex_start - 2; // include "\u"
-                            let escape_sequence = &self.source[escape_sequence_start..hex_end];
+                            let escape_sequence =
+                                &self.source[escape_sequence_start as usize..hex_end as usize];
                             self.add_err(Error::with_loc(
                                 "surrogate code point is invalid in unicode escape sequence \
                                  (paired surrogate not supported yet: \
@@ -388,16 +402,17 @@ impl<'a> Cursor<'a> {
 
     fn lex_block_string(&mut self, mut token: Token<'a>) -> Result<Token<'a>, Error> {
         loop {
-            let Some(found) = memchr::memchr2(b'"', b'\\', &self.bytes[self.next..]) else {
+            let Some(found) = memchr::memchr2(b'"', b'\\', &self.bytes[self.next as usize..])
+            else {
                 return self.unterminated_string(&token);
             };
-            let stop = self.next + found;
+            let stop = self.next + source_offset(found);
 
             // Consume through the stop byte.
             self.offset = stop;
             self.next = stop + 1;
 
-            if self.bytes[stop] == b'"' {
+            if self.bytes[stop as usize] == b'"' {
                 // Require two additional quotes to complete the triple quote;
                 // a lone second quote is consumed as content.
                 if self.eatc(b'"') && self.eatc(b'"') {

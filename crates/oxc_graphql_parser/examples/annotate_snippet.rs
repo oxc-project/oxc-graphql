@@ -35,7 +35,7 @@ fn parse_schema() {
         let snippet = Level::ERROR.primary_title(err.message()).element(
             Snippet::source(&src).line_start(0).path(file_name).fold(true).annotation(
                 AnnotationKind::Primary
-                    .span(err.index()..err.index() + err.data().len())
+                    .span(err.index() as usize..err.index() as usize + err.data().len())
                     .label(err.message()),
             ),
         );
