@@ -5,14 +5,19 @@ use std::slice::Iter;
 
 pub use oxc_allocator::{Box as AstBox, Vec as AstVec};
 
+/// A half-open byte range into the source text.
+///
+/// Offsets are `u32`: source texts are limited to 4 GiB (asserted by
+/// [`crate::Parser::new`]), which halves the size of every AST node that
+/// carries a span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Span {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Self {
+    pub fn new(start: u32, end: u32) -> Self {
         Self { start, end }
     }
 }

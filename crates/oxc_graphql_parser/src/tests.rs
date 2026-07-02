@@ -112,8 +112,11 @@ type T {
     let ast = Parser::new(&allocator, source).parse();
     assert_eq!(ast.errors().len(), 0);
 
-    let comments =
-        ast.comments().iter().map(|span| &source[span.start..span.end]).collect::<Vec<_>>();
+    let comments = ast
+        .comments()
+        .iter()
+        .map(|span| &source[span.start as usize..span.end as usize])
+        .collect::<Vec<_>>();
     assert_eq!(
         comments,
         [
@@ -128,6 +131,33 @@ type T {
 }
 
 #[test]
+fn parser_string_values() {
+    // Escaped strings and block strings with `\r` line endings are unescaped
+    // or normalized into arena-allocated values; strings that need no
+    // rewriting are borrowed directly from the source text.
+    let source = "\"plain\"\nscalar A\n\"esc\\u0041ped \\n\\\"quote\\\" end\"\nscalar B\n\"\"\"one\r\ntwo\rthree\nfour\"\"\"\nscalar C\n\"\"\"block unchanged\"\"\"\nscalar D";
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert_eq!(ast.errors().len(), 0);
+
+    let descriptions = ast
+        .document()
+        .definitions
+        .iter()
+        .map(|definition| {
+            let ast::Definition::ScalarType(scalar) = definition else {
+                panic!("expected scalar definition");
+            };
+            scalar.description.as_ref().unwrap().value
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        descriptions,
+        ["plain", "escAped \n\"quote\" end", "one\ntwo\nthree\nfour", "block unchanged"]
+    );
+}
+
+#[test]
 fn parser_collects_comments_without_duplicates_on_lookahead() {
     // `extend` parsing peeks ahead multiple times; comments in between must be
     // recorded only once.
@@ -135,7 +165,8 @@ fn parser_collects_comments_without_duplicates_on_lookahead() {
     let allocator = Allocator::default();
     let ast = Parser::new(&allocator, source).parse();
     assert_eq!(ast.errors().len(), 0);
-    assert_eq!(ast.comments(), [ast::Span::new(0, "# before extend".len())]);
+    let end = u32::try_from("# before extend".len()).unwrap();
+    assert_eq!(ast.comments(), [ast::Span::new(0, end)]);
 }
 
 #[test]
@@ -153,7 +184,24 @@ fn parser_comment_spans_end_before_line_terminators() {
         let allocator = Allocator::default();
         let ast = Parser::new(&allocator, &source).parse();
         assert_eq!(ast.errors().len(), 0);
-        assert_eq!(ast.comments(), [ast::Span::new(0, "# comment".len())]);
+        let end = u32::try_from("# comment".len()).unwrap();
+        assert_eq!(ast.comments(), [ast::Span::new(0, end)]);
+    }
+}
+
+#[test]
+fn lexer_roundtrip_corpus() {
+    // For any input the lexer tokenizes without errors, concatenating all
+    // token text must reproduce the source exactly.
+    for dir in ["lexer/ok", "lexer/err", "parser/ok", "parser/err"] {
+        for path in graphql_files(dir) {
+            let source = fs::read_to_string(&path).unwrap();
+            let (tokens, errors) = Lexer::new(&source).lex();
+            if errors.is_empty() {
+                let concatenated: String = tokens.iter().map(crate::Token::data).collect();
+                assert_eq!(source, concatenated, "{}", path.display());
+            }
+        }
     }
 }
 
