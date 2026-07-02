@@ -115,6 +115,7 @@ pub enum Definition<'a> {
     Operation(OperationDefinition<'a>),
     Fragment(FragmentDefinition<'a>),
     Directive(DirectiveDefinition<'a>),
+    DirectiveExtension(DirectiveExtension<'a>),
     Schema(SchemaDefinition<'a>),
     SchemaExtension(SchemaExtension<'a>),
     ScalarType(ScalarTypeDefinition<'a>),
@@ -137,6 +138,7 @@ impl<'a> Definition<'a> {
             Self::Operation(definition) => definition.name.as_ref(),
             Self::Fragment(definition) => Some(&definition.name),
             Self::Directive(definition) => Some(&definition.name),
+            Self::DirectiveExtension(definition) => Some(&definition.name),
             Self::Schema(_) | Self::SchemaExtension(_) => None,
             Self::ScalarType(definition) => Some(&definition.name),
             Self::ScalarTypeExtension(definition) => Some(&definition.name),
@@ -161,6 +163,7 @@ impl<'a> Definition<'a> {
             Self::Operation(definition) => definition.span,
             Self::Fragment(definition) => definition.span,
             Self::Directive(definition) => definition.span,
+            Self::DirectiveExtension(definition) => definition.span,
             Self::Schema(definition) => definition.span,
             Self::SchemaExtension(definition) => definition.span,
             Self::ScalarType(definition) => definition.span,
@@ -461,6 +464,13 @@ pub struct SchemaExtension<'a> {
 pub struct RootOperationTypeDefinition<'a> {
     pub operation_type: OperationType,
     pub named_type: NamedType<'a>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DirectiveExtension<'a> {
+    pub name: Name<'a>,
+    pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
 
