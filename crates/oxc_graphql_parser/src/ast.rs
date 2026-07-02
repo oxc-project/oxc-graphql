@@ -147,6 +147,31 @@ impl<'a> Definition<'a> {
             Self::InputObjectTypeExtension(definition) => Some(&definition.name),
         }
     }
+
+    /// The source span of the definition, whichever variant it is.
+    ///
+    /// When adding a new variant, remember to extend this match as well.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Operation(definition) => definition.span,
+            Self::Fragment(definition) => definition.span,
+            Self::Directive(definition) => definition.span,
+            Self::Schema(definition) => definition.span,
+            Self::SchemaExtension(definition) => definition.span,
+            Self::ScalarType(definition) => definition.span,
+            Self::ScalarTypeExtension(definition) => definition.span,
+            Self::ObjectType(definition) => definition.span,
+            Self::ObjectTypeExtension(definition) => definition.span,
+            Self::InterfaceType(definition) => definition.span,
+            Self::InterfaceTypeExtension(definition) => definition.span,
+            Self::UnionType(definition) => definition.span,
+            Self::UnionTypeExtension(definition) => definition.span,
+            Self::EnumType(definition) => definition.span,
+            Self::EnumTypeExtension(definition) => definition.span,
+            Self::InputObjectType(definition) => definition.span,
+            Self::InputObjectTypeExtension(definition) => definition.span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -215,6 +240,19 @@ pub enum Selection<'a> {
     Field(Field<'a>),
     FragmentSpread(FragmentSpread<'a>),
     InlineFragment(InlineFragment<'a>),
+}
+
+impl Selection<'_> {
+    /// The source span of the selection, whichever variant it is.
+    ///
+    /// When adding a new variant, remember to extend this match as well.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Field(selection) => selection.span,
+            Self::FragmentSpread(selection) => selection.span,
+            Self::InlineFragment(selection) => selection.span,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]

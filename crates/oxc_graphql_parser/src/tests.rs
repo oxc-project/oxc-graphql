@@ -170,6 +170,54 @@ fn parser_collects_comments_for_selection_set_and_type_roots() {
 }
 
 #[test]
+fn definition_and_selection_spans_match_inner_nodes() {
+    let source = r#"query Q {
+  field
+  ...spread
+  ... on T {
+    inline
+  }
+}
+type T {
+  name: String
+}
+extend type T {
+  extra: String
+}"#;
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert_eq!(ast.errors().len(), 0);
+
+    let definitions = &ast.document().definitions;
+    let ast::Definition::Operation(operation) = &definitions[0] else {
+        panic!("expected operation definition");
+    };
+    assert_eq!(definitions[0].span(), operation.span);
+    let ast::Definition::ObjectType(object) = &definitions[1] else {
+        panic!("expected object type definition");
+    };
+    assert_eq!(definitions[1].span(), object.span);
+    let ast::Definition::ObjectTypeExtension(extension) = &definitions[2] else {
+        panic!("expected object type extension");
+    };
+    assert_eq!(definitions[2].span(), extension.span);
+
+    let selections = &operation.selection_set.as_ref().unwrap().selections;
+    let ast::Selection::Field(field) = &selections[0] else {
+        panic!("expected field");
+    };
+    assert_eq!(selections[0].span(), field.span);
+    let ast::Selection::FragmentSpread(spread) = &selections[1] else {
+        panic!("expected fragment spread");
+    };
+    assert_eq!(selections[1].span(), spread.span);
+    let ast::Selection::InlineFragment(inline) = &selections[2] else {
+        panic!("expected inline fragment");
+    };
+    assert_eq!(selections[2].span(), inline.span);
+}
+
+#[test]
 fn parser_ok_fixtures_have_no_errors() {
     for path in graphql_files("parser/ok") {
         let source = fs::read_to_string(&path).unwrap();
