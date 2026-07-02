@@ -550,7 +550,8 @@ impl<'a> Parser<'a> {
             ty = self.parse_type_inner();
             if self.peek() == Some(T![=]) {
                 self.bump();
-                default_value = Some(self.parse_value(Constness::Const, false));
+                let value = self.parse_value(Constness::Const, false);
+                default_value = Some(&*self.allocator.alloc(value));
             }
             directives = self.parse_directives(Constness::Const);
         } else {
@@ -613,9 +614,10 @@ impl<'a> Parser<'a> {
             }
             Some(TokenKind::Int) => self.parse_int_value(),
             Some(TokenKind::Float) => self.parse_float_value(),
-            Some(TokenKind::StringValue) => self
-                .parse_string_value()
-                .map_or_else(|| Value::Missing(self.current_span()), Value::String),
+            Some(TokenKind::StringValue) => match self.parse_string_value() {
+                Some(value) => Value::String(self.allocator.alloc(value)),
+                None => Value::Missing(self.current_span()),
+            },
             Some(TokenKind::Name) => self.parse_name_value(),
             Some(T!['[']) => self.parse_list_value(constness),
             Some(T!['{']) => self.parse_object_value(constness),
@@ -1115,7 +1117,8 @@ impl<'a> Parser<'a> {
         };
         let default_value = if self.peek() == Some(T![=]) {
             self.bump();
-            Some(self.parse_value(Constness::Const, false))
+            let value = self.parse_value(Constness::Const, false);
+            Some(&*self.allocator.alloc(value))
         } else {
             None
         };

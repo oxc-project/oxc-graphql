@@ -290,7 +290,7 @@ pub struct VariableDefinition<'a> {
     pub description: Option<&'a StringValue<'a>>,
     pub variable: Variable<'a>,
     pub ty: Option<Type<'a>>,
-    pub default_value: Option<Value<'a>>,
+    pub default_value: Option<&'a Value<'a>>,
     pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
@@ -320,7 +320,7 @@ pub enum Value<'a> {
     Variable(Variable<'a>),
     Int(IntValue<'a>),
     Float(FloatValue<'a>),
-    String(StringValue<'a>),
+    String(&'a StringValue<'a>),
     Boolean(BooleanValue),
     Null(NullValue),
     Enum(EnumValue<'a>),
@@ -606,7 +606,7 @@ pub struct InputValueDefinition<'a> {
     pub description: Option<&'a StringValue<'a>>,
     pub name: Name<'a>,
     pub ty: Option<Type<'a>>,
-    pub default_value: Option<Value<'a>>,
+    pub default_value: Option<&'a Value<'a>>,
     pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
