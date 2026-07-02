@@ -273,6 +273,7 @@ pub struct Field<'a> {
 #[derive(Debug)]
 pub struct FragmentSpread<'a> {
     pub name: Name<'a>,
+    pub arguments: AstVec<'a, Argument<'a>>,
     pub directives: AstVec<'a, Directive<'a>>,
     pub span: Span,
 }
