@@ -13,9 +13,7 @@ pub struct Parser<'a> {
     comments: Vec<Span>,
     recursion_limit: LimitTracker,
     accept_errors: bool,
-    allow_executable_descriptions: bool,
     experimental_fragment_arguments: bool,
-    experimental_directives_on_directive_definitions: bool,
     last_end: u32,
     /// Reusable scratch stack for building AST lists. List elements are
     /// collected here and copied into the arena once, at the exact final
@@ -66,9 +64,7 @@ impl<'a> Parser<'a> {
             comments: Vec::new(),
             recursion_limit: LimitTracker::new(DEFAULT_RECURSION_LIMIT),
             accept_errors: true,
-            allow_executable_descriptions: false,
             experimental_fragment_arguments: false,
-            experimental_directives_on_directive_definitions: false,
             last_end: 0,
             scratch: Vec::new(),
         }
@@ -84,18 +80,8 @@ impl<'a> Parser<'a> {
         self
     }
 
-    pub fn allow_executable_descriptions(mut self, allow: bool) -> Self {
-        self.allow_executable_descriptions = allow;
-        self
-    }
-
     pub fn experimental_fragment_arguments(mut self, allow: bool) -> Self {
         self.experimental_fragment_arguments = allow;
-        self
-    }
-
-    pub fn experimental_directives_on_directive_definitions(mut self, allow: bool) -> Self {
-        self.experimental_directives_on_directive_definitions = allow;
         self
     }
 
@@ -239,7 +225,7 @@ impl<'a> Parser<'a> {
             Some("input") => Definition::InputObjectTypeExtension(
                 self.parse_input_object_type_extension_from(start),
             ),
-            Some("directive") if self.experimental_directives_on_directive_definitions => {
+            Some("directive") => {
                 Definition::DirectiveExtension(self.parse_directive_extension_from(start))
             }
             _ => {
@@ -555,11 +541,7 @@ impl<'a> Parser<'a> {
 
     fn parse_variable_definition(&mut self) -> VariableDefinition<'a> {
         let start = self.current_start();
-        let description = if self.allow_executable_descriptions {
-            self.parse_description_if_present()
-        } else {
-            None
-        };
+        let description = self.parse_description_if_present();
         let variable = self.parse_variable().unwrap_or_else(|| self.missing_variable());
         let mut ty = None;
         let mut default_value = None;
@@ -861,7 +843,7 @@ impl<'a> Parser<'a> {
         RootOperationTypeDefinition { operation_type, named_type, span: self.span_from(start) }
     }
 
-    fn parse_directive_extension_from(&mut self, start: usize) -> DirectiveExtension<'a> {
+    fn parse_directive_extension_from(&mut self, start: u32) -> DirectiveExtension<'a> {
         self.expect_name_value("directive");
         self.expect(T![@], "expected @ symbol");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("directive"));
@@ -882,11 +864,7 @@ impl<'a> Parser<'a> {
         self.expect(T![@], "expected @ symbol");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("directive"));
         let arguments = self.parse_arguments_definition_if_present();
-        let directives = if self.experimental_directives_on_directive_definitions {
-            self.parse_directives(Constness::Const)
-        } else {
-            self.new_vec()
-        };
+        let directives = self.parse_directives(Constness::Const);
         let repeatable = if self.peek_data() == Some("repeatable") {
             self.bump();
             true
