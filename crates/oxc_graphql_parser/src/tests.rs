@@ -355,6 +355,22 @@ fn parser_parses_variable_definition_descriptions() {
 }
 
 #[test]
+fn parser_rejects_description_on_shorthand_query() {
+    let source = r#""""doc""" { f }"#;
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert!(ast.errors().len() > 0);
+}
+
+#[test]
+fn parser_rejects_description_on_extension() {
+    let source = r#""""doc""" extend type Foo @bar"#;
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert!(ast.errors().len() > 0);
+}
+
+#[test]
 fn parser_ok_fixtures_have_no_errors() {
     for path in graphql_files("parser/ok") {
         let source = fs::read_to_string(&path).unwrap();

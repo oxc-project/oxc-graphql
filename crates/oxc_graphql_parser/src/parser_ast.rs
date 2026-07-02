@@ -173,7 +173,14 @@ impl<'a> Parser<'a> {
         let definition = match selector {
             "directive" => Definition::Directive(self.parse_directive_definition(description)),
             "enum" => Definition::EnumType(self.parse_enum_type_definition(description)),
-            "extend" => return self.parse_extension(),
+            "extend" => {
+                if description.is_some() {
+                    self.err(
+                        "Unexpected description, only GraphQL definitions support descriptions.",
+                    );
+                }
+                return self.parse_extension();
+            }
             "fragment" => Definition::Fragment(self.parse_fragment_definition(description)),
             "input" => {
                 Definition::InputObjectType(self.parse_input_object_type_definition(description))
@@ -182,7 +189,15 @@ impl<'a> Parser<'a> {
                 Definition::InterfaceType(self.parse_interface_type_definition(description))
             }
             "type" => Definition::ObjectType(self.parse_object_type_definition(description)),
-            "query" | "mutation" | "subscription" | "{" => {
+            "{" => {
+                if description.is_some() {
+                    self.err(
+                        "Unexpected description, descriptions are not supported on shorthand queries.",
+                    );
+                }
+                Definition::Operation(self.parse_operation_definition(description))
+            }
+            "query" | "mutation" | "subscription" => {
                 Definition::Operation(self.parse_operation_definition(description))
             }
             "scalar" => Definition::ScalarType(self.parse_scalar_type_definition(description)),
