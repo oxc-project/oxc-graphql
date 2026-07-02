@@ -10,6 +10,7 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current_token: Option<Token<'a>>,
     errors: Vec<Error>,
+    comments: Vec<Span>,
     recursion_limit: LimitTracker,
     accept_errors: bool,
     allow_executable_descriptions: bool,
@@ -33,6 +34,7 @@ impl<'a> Parser<'a> {
             lexer: Lexer::new(input),
             current_token: None,
             errors: Vec::new(),
+            comments: Vec::new(),
             recursion_limit: LimitTracker::new(DEFAULT_RECURSION_LIMIT),
             accept_errors: true,
             allow_executable_descriptions: false,
@@ -63,14 +65,12 @@ impl<'a> Parser<'a> {
 
     pub fn parse(mut self) -> Ast<'a, Document<'a>> {
         let document = self.parse_document();
-        let token_limit = self.lexer.limit_tracker;
-        Ast::new(self.input, document, self.errors, self.recursion_limit, token_limit)
+        self.into_ast(document)
     }
 
     pub fn parse_selection_set(mut self) -> Ast<'a, SelectionSet<'a>> {
         let selection_set = self.parse_selection_set_inner();
-        let token_limit = self.lexer.limit_tracker;
-        Ast::new(self.input, selection_set, self.errors, self.recursion_limit, token_limit)
+        self.into_ast(selection_set)
     }
 
     pub fn parse_type(mut self) -> Ast<'a, Type<'a>> {
@@ -79,8 +79,12 @@ impl<'a> Parser<'a> {
             self.err("expected a type");
             Type::Missing(span)
         });
+        self.into_ast(ty)
+    }
+
+    fn into_ast<T>(self, root: T) -> Ast<'a, T> {
         let token_limit = self.lexer.limit_tracker;
-        Ast::new(self.input, ty, self.errors, self.recursion_limit, token_limit)
+        Ast::new(self.input, root, self.errors, self.comments, self.recursion_limit, token_limit)
     }
 
     fn new_vec<T>(&self) -> ArenaVec<'a, T> {
@@ -1378,8 +1382,14 @@ impl<'a> Parser<'a> {
     fn next_significant_token(&mut self) -> Option<Token<'a>> {
         for item in &mut self.lexer {
             match item {
-                Ok(token) if is_ignored(token.kind()) => continue,
-                Ok(token) => return Some(token),
+                Ok(token) => match token.kind() {
+                    TokenKind::Whitespace | TokenKind::Comma => {}
+                    TokenKind::Comment => {
+                        self.comments
+                            .push(Span::new(token.index(), token.index() + token.data().len()));
+                    }
+                    _ => return Some(token),
+                },
                 Err(err) => {
                     if err.is_limit() {
                         self.accept_errors = false;
@@ -1414,10 +1424,6 @@ impl MissingNameContext for Name<'_> {
     fn with_context(self, _context: &str) -> Self {
         self
     }
-}
-
-fn is_ignored(kind: TokenKind) -> bool {
-    matches!(kind, TokenKind::Whitespace | TokenKind::Comment | TokenKind::Comma)
 }
 
 fn unescape_string(input: &str) -> String {

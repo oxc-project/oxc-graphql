@@ -96,6 +96,80 @@ fn parser_parses_legacy_fragment_variables() {
 }
 
 #[test]
+fn parser_collects_comment_spans_in_document_order() {
+    let source = r#"# leading
+query Q {
+  # inside selection set
+  field # trailing
+  # before closing brace
+}
+# between definitions
+type T {
+  name: String
+}
+# at end of document"#;
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert_eq!(ast.errors().len(), 0);
+
+    let comments =
+        ast.comments().iter().map(|span| &source[span.start..span.end]).collect::<Vec<_>>();
+    assert_eq!(
+        comments,
+        [
+            "# leading",
+            "# inside selection set",
+            "# trailing",
+            "# before closing brace",
+            "# between definitions",
+            "# at end of document",
+        ]
+    );
+}
+
+#[test]
+fn parser_collects_comments_without_duplicates_on_lookahead() {
+    // `extend` parsing peeks ahead multiple times; comments in between must be
+    // recorded only once.
+    let source = "# before extend\nextend type T { name: String }";
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).parse();
+    assert_eq!(ast.errors().len(), 0);
+    assert_eq!(ast.comments(), [ast::Span::new(0, "# before extend".len())]);
+}
+
+#[test]
+fn parser_collects_no_comments_when_absent() {
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, "type T { name: String }").parse();
+    assert_eq!(ast.errors().len(), 0);
+    assert!(ast.comments().is_empty());
+}
+
+#[test]
+fn parser_comment_spans_end_before_line_terminators() {
+    for line_terminator in ["\n", "\r\n", "\r"] {
+        let source = format!("# comment{line_terminator}type T {{ name: String }}");
+        let allocator = Allocator::default();
+        let ast = Parser::new(&allocator, &source).parse();
+        assert_eq!(ast.errors().len(), 0);
+        assert_eq!(ast.comments(), [ast::Span::new(0, "# comment".len())]);
+    }
+}
+
+#[test]
+fn parser_collects_comments_for_selection_set_and_type_roots() {
+    let allocator = Allocator::default();
+    let selection = Parser::new(&allocator, "{ field # inside\n}").parse_selection_set();
+    assert_eq!(selection.errors().len(), 0);
+    assert_eq!(selection.comments().len(), 1);
+
+    let ty = Parser::new(&allocator, "String").parse_type();
+    assert_eq!(ty.errors().len(), 0);
+    assert!(ty.comments().is_empty());
+}
+
+#[test]
 fn parser_ok_fixtures_have_no_errors() {
     for path in graphql_files("parser/ok") {
         let source = fs::read_to_string(&path).unwrap();

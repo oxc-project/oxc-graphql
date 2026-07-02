@@ -22,6 +22,7 @@ pub struct Ast<'a, T> {
     source: &'a str,
     root: T,
     errors: Vec<Error>,
+    comments: Vec<Span>,
     recursion_limit: LimitTracker,
     token_limit: LimitTracker,
 }
@@ -31,10 +32,11 @@ impl<'a, T> Ast<'a, T> {
         source: &'a str,
         root: T,
         errors: Vec<Error>,
+        comments: Vec<Span>,
         recursion_limit: LimitTracker,
         token_limit: LimitTracker,
     ) -> Self {
-        Self { source, root, errors, recursion_limit, token_limit }
+        Self { source, root, errors, comments, recursion_limit, token_limit }
     }
 
     pub fn root(&self) -> &T {
@@ -51,6 +53,23 @@ impl<'a, T> Ast<'a, T> {
 
     pub fn errors(&self) -> Iter<'_, Error> {
         self.errors.iter()
+    }
+
+    /// Comment token spans in document order.
+    ///
+    /// GraphQL comments are always line comments: each span covers `#` through
+    /// the end of the line (excluding the line terminator).
+    ///
+    /// NOTE: Only comments consumed while parsing are recorded.
+    /// [`Parser::parse`] reads to the end of input, so it collects every comment in the source.
+    /// Partial roots ([`Parser::parse_selection_set`], [`Parser::parse_type`])
+    /// stop at the end of the root, so comments past it are not included.
+    ///
+    /// [`Parser::parse`]: crate::Parser::parse
+    /// [`Parser::parse_selection_set`]: crate::Parser::parse_selection_set
+    /// [`Parser::parse_type`]: crate::Parser::parse_type
+    pub fn comments(&self) -> &[Span] {
+        &self.comments
     }
 
     pub fn recursion_limit(&self) -> LimitTracker {
