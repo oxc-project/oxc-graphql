@@ -81,6 +81,21 @@ fn parser_parses_selection_set_and_type_roots() {
 }
 
 #[test]
+fn parser_parses_legacy_fragment_variables() {
+    let source = "fragment F($v: Int) on T { f(x: $v) }";
+    let allocator = Allocator::default();
+    let ast = Parser::new(&allocator, source).allow_legacy_fragment_variables(true).parse();
+    assert_eq!(ast.errors().len(), 0);
+
+    let ast::Definition::Fragment(fragment) = &ast.document().definitions[0] else {
+        panic!("expected fragment definition");
+    };
+    assert_eq!(fragment.name.as_str(), "F");
+    assert_eq!(fragment.variable_definitions.len(), 1);
+    assert_eq!(fragment.variable_definitions[0].variable.name.as_str(), "v");
+}
+
+#[test]
 fn parser_ok_fixtures_have_no_errors() {
     for path in graphql_files("parser/ok") {
         let source = fs::read_to_string(&path).unwrap();

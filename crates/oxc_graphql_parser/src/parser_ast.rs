@@ -252,15 +252,14 @@ impl<'a> Parser<'a> {
         let start =
             description.as_ref().map_or_else(|| self.current_start(), |value| value.span.start);
         self.expect_name_value("fragment");
-
-        let variable_definitions =
-            if self.allow_legacy_fragment_variables && self.peek() == Some(T!['(']) {
-                self.parse_variable_definitions_if_present()
-            } else {
-                self.new_vec()
-            };
-
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("fragment"));
+
+        let variable_definitions = if self.allow_legacy_fragment_variables {
+            self.parse_variable_definitions_if_present()
+        } else {
+            self.new_vec()
+        };
+
         self.expect_name_value("on");
         let type_condition = self.parse_named_type().unwrap_or_else(|| self.missing_named_type());
         let directives = self.parse_directives(Constness::NotConst);
