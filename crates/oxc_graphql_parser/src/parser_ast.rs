@@ -15,7 +15,27 @@ pub struct Parser<'a> {
     accept_errors: bool,
     allow_executable_descriptions: bool,
     allow_legacy_fragment_variables: bool,
-    last_end: usize,
+    last_end: u32,
+    /// Reusable scratch stack for building AST lists. List elements are
+    /// collected here and copied into the arena once, at the exact final
+    /// size: growing an arena vec strands every outgrown copy in the arena,
+    /// because parsing the elements allocates in between. Recursive descent
+    /// finishes nested lists in LIFO order, so all list types share this one
+    /// stack: a list records the stack length when it starts and drains
+    /// everything above that mark when it ends.
+    scratch: Vec<ScratchNode<'a>>,
+}
+
+/// An element of [`Parser::scratch`]; one variant per AST list type built
+/// through the scratch stack.
+enum ScratchNode<'a> {
+    Definition(Definition<'a>),
+    Selection(Selection<'a>),
+    Argument(Argument<'a>),
+    VariableDefinition(VariableDefinition<'a>),
+    FieldDefinition(FieldDefinition<'a>),
+    InputValueDefinition(InputValueDefinition<'a>),
+    Directive(Directive<'a>),
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +47,15 @@ enum Constness {
 const DEFAULT_RECURSION_LIMIT: usize = 500;
 
 impl<'a> Parser<'a> {
+    /// # Panics
+    ///
+    /// Panics if `input` is larger than 4 GiB: AST spans store `u32` offsets.
     pub fn new(allocator: &'a Allocator, input: &'a str) -> Self {
+        assert!(
+            u32::try_from(input.len()).is_ok(),
+            "source text is too long for u32 spans (max 4 GiB): {} bytes",
+            input.len()
+        );
         Self {
             allocator,
             input,
@@ -40,6 +68,7 @@ impl<'a> Parser<'a> {
             allow_executable_descriptions: false,
             allow_legacy_fragment_variables: false,
             last_end: 0,
+            scratch: Vec::new(),
         }
     }
 
@@ -91,9 +120,28 @@ impl<'a> Parser<'a> {
         ArenaVec::new_in(&self.allocator)
     }
 
+    /// Marks the start of a new scratch-built list, pre-sizing the stack so
+    /// small parses pay for at most one scratch allocation.
+    fn scratch_mark(&mut self) -> usize {
+        if self.scratch.capacity() == 0 {
+            self.scratch.reserve(128);
+        }
+        self.scratch.len()
+    }
+
+    /// Moves the scratch elements above `mark` into an exact-size arena vec.
+    #[inline]
+    fn drain_scratch<T>(
+        &mut self,
+        mark: usize,
+        unwrap: impl FnMut(ScratchNode<'a>) -> T,
+    ) -> ArenaVec<'a, T> {
+        ArenaVec::from_iter_in(self.scratch.drain(mark..).map(unwrap), &self.allocator)
+    }
+
     fn parse_document(&mut self) -> Document<'a> {
         let start = self.current_start();
-        let mut definitions = self.new_vec();
+        let mark = self.scratch_mark();
 
         if self.peek().is_none_or(|kind| kind == TokenKind::Eof) {
             self.err("Unexpected <EOF>.");
@@ -106,7 +154,7 @@ impl<'a> Parser<'a> {
 
             let before = parser.current_span();
             if let Some(definition) = parser.parse_definition() {
-                definitions.push(definition);
+                parser.scratch.push(ScratchNode::Definition(definition));
             } else {
                 parser.err_and_pop("expected a StringValue, Name or OperationDefinition");
             }
@@ -118,6 +166,10 @@ impl<'a> Parser<'a> {
             ControlFlow::Continue(())
         });
 
+        let definitions = self.drain_scratch(mark, |node| match node {
+            ScratchNode::Definition(definition) => definition,
+            _ => unreachable!("scratch stack discipline"),
+        });
         Document { definitions, span: self.span_from(start) }
     }
 
@@ -288,11 +340,12 @@ impl<'a> Parser<'a> {
     fn parse_selection_set_inner(&mut self) -> SelectionSet<'a> {
         let start = self.current_start();
         self.expect(T!['{'], "expected {");
-        let mut selections = self.new_vec();
+
+        let mark = self.scratch_mark();
 
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
-                if selections.is_empty() {
+                if parser.scratch.len() == mark {
                     parser.err("expected Selection");
                 }
                 parser.bump();
@@ -307,10 +360,16 @@ impl<'a> Parser<'a> {
                 ControlFlow::Break(())
             }
             _ => {
-                selections.push(parser.parse_selection());
+                let selection = parser.parse_selection();
+                parser.scratch.push(ScratchNode::Selection(selection));
                 parser.recursion_limit.decrement();
                 ControlFlow::Continue(())
             }
+        });
+
+        let selections = self.drain_scratch(mark, |node| match node {
+            ScratchNode::Selection(selection) => selection,
+            _ => unreachable!("scratch stack discipline"),
         });
 
         SelectionSet { selections, span: self.span_from(start) }
@@ -395,14 +454,15 @@ impl<'a> Parser<'a> {
         }
 
         self.bump();
-        let mut arguments = self.new_vec();
+        let mark = self.scratch_mark();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
                 parser.bump();
                 ControlFlow::Break(())
             }
             TokenKind::Name => {
-                arguments.push(parser.parse_argument(constness));
+                let argument = parser.parse_argument(constness);
+                parser.scratch.push(ScratchNode::Argument(argument));
                 ControlFlow::Continue(())
             }
             TokenKind::Eof => {
@@ -414,7 +474,10 @@ impl<'a> Parser<'a> {
                 ControlFlow::Continue(())
             }
         });
-        arguments
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::Argument(argument) => argument,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_argument(&mut self, constness: Constness) -> Argument<'a> {
@@ -436,17 +499,18 @@ impl<'a> Parser<'a> {
         }
 
         self.bump();
-        let mut definitions = self.new_vec();
+        let mark = self.scratch_mark();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
-                if definitions.is_empty() {
+                if parser.scratch.len() == mark {
                     parser.err("expected a Variable Definition");
                 }
                 parser.bump();
                 ControlFlow::Break(())
             }
             T![$] | TokenKind::StringValue => {
-                definitions.push(parser.parse_variable_definition());
+                let definition = parser.parse_variable_definition();
+                parser.scratch.push(ScratchNode::VariableDefinition(definition));
                 ControlFlow::Continue(())
             }
             TokenKind::Eof => {
@@ -458,7 +522,10 @@ impl<'a> Parser<'a> {
                 ControlFlow::Continue(())
             }
         });
-        definitions
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::VariableDefinition(definition) => definition,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_variable_definition(&mut self) -> VariableDefinition<'a> {
@@ -507,11 +574,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_directives(&mut self, constness: Constness) -> ArenaVec<'a, Directive<'a>> {
-        let mut directives = self.new_vec();
-        while self.peek() == Some(T![@]) {
-            directives.push(self.parse_directive(constness));
+        if self.peek() != Some(T![@]) {
+            return self.new_vec();
         }
-        directives
+
+        let mark = self.scratch_mark();
+        while self.peek() == Some(T![@]) {
+            let directive = self.parse_directive(constness);
+            self.scratch.push(ScratchNode::Directive(directive));
+        }
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::Directive(directive) => directive,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_directive(&mut self, constness: Constness) -> Directive<'a> {
@@ -553,18 +628,12 @@ impl<'a> Parser<'a> {
 
     fn parse_int_value(&mut self) -> Value<'a> {
         let token = self.bump().expect("peeked int token must be available");
-        Value::Int(IntValue {
-            raw: token.data(),
-            span: Span::new(token.index(), token.index() + token.data().len()),
-        })
+        Value::Int(IntValue { raw: token.data(), span: token_span(&token) })
     }
 
     fn parse_float_value(&mut self) -> Value<'a> {
         let token = self.bump().expect("peeked float token must be available");
-        Value::Float(FloatValue {
-            raw: token.data(),
-            span: Span::new(token.index(), token.index() + token.data().len()),
-        })
+        Value::Float(FloatValue { raw: token.data(), span: token_span(&token) })
     }
 
     fn parse_name_value(&mut self) -> Value<'a> {
@@ -702,7 +771,7 @@ impl<'a> Parser<'a> {
         SchemaDefinition { description, directives, root_operations, span: self.span_from(start) }
     }
 
-    fn parse_schema_extension_from(&mut self, start: usize) -> SchemaExtension<'a> {
+    fn parse_schema_extension_from(&mut self, start: u32) -> SchemaExtension<'a> {
         self.expect_name_value("schema");
         let directives = self.parse_directives(Constness::Const);
         let root_operations = self.parse_root_operation_types_if_present();
@@ -807,10 +876,7 @@ impl<'a> Parser<'a> {
                 && token.kind() == TokenKind::Name
             {
                 self.bump();
-                locations.push(DirectiveLocation {
-                    name: token.data(),
-                    span: Span::new(token.index(), token.index() + token.data().len()),
-                });
+                locations.push(DirectiveLocation { name: token.data(), span: token_span(&token) });
             } else {
                 self.err("expected valid Directive Location");
                 break;
@@ -837,7 +903,7 @@ impl<'a> Parser<'a> {
         ScalarTypeDefinition { description, name, directives, span: self.span_from(start) }
     }
 
-    fn parse_scalar_type_extension_from(&mut self, start: usize) -> ScalarTypeExtension<'a> {
+    fn parse_scalar_type_extension_from(&mut self, start: u32) -> ScalarTypeExtension<'a> {
         self.expect_name_value("scalar");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("scalar"));
         let directives = self.parse_directives(Constness::Const);
@@ -868,7 +934,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_object_type_extension_from(&mut self, start: usize) -> ObjectTypeExtension<'a> {
+    fn parse_object_type_extension_from(&mut self, start: u32) -> ObjectTypeExtension<'a> {
         self.expect_name_value("type");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("object type"));
         let interfaces = self.parse_implements_interfaces();
@@ -901,7 +967,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_interface_type_extension_from(&mut self, start: usize) -> InterfaceTypeExtension<'a> {
+    fn parse_interface_type_extension_from(&mut self, start: u32) -> InterfaceTypeExtension<'a> {
         self.expect_name_value("interface");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("interface"));
         let interfaces = self.parse_implements_interfaces();
@@ -947,17 +1013,18 @@ impl<'a> Parser<'a> {
         }
 
         self.bump();
-        let mut fields = self.new_vec();
+        let mark = self.scratch_mark();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
-                if fields.is_empty() {
+                if parser.scratch.len() == mark {
                     parser.err("expected Field Definition");
                 }
                 parser.bump();
                 ControlFlow::Break(())
             }
             TokenKind::Name | TokenKind::StringValue => {
-                fields.push(parser.parse_field_definition());
+                let field = parser.parse_field_definition();
+                parser.scratch.push(ScratchNode::FieldDefinition(field));
                 ControlFlow::Continue(())
             }
             TokenKind::Eof => {
@@ -969,7 +1036,10 @@ impl<'a> Parser<'a> {
                 ControlFlow::Continue(())
             }
         });
-        fields
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::FieldDefinition(field) => field,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_field_definition(&mut self) -> FieldDefinition<'a> {
@@ -1001,14 +1071,15 @@ impl<'a> Parser<'a> {
         }
 
         self.bump();
-        let mut definitions = self.new_vec();
+        let mark = self.scratch_mark();
         self.peek_while(|parser, kind| match kind {
             T![')'] => {
                 parser.bump();
                 ControlFlow::Break(())
             }
             TokenKind::Name | TokenKind::StringValue => {
-                definitions.push(parser.parse_input_value_definition());
+                let definition = parser.parse_input_value_definition();
+                parser.scratch.push(ScratchNode::InputValueDefinition(definition));
                 ControlFlow::Continue(())
             }
             TokenKind::Eof => {
@@ -1020,7 +1091,10 @@ impl<'a> Parser<'a> {
                 ControlFlow::Continue(())
             }
         });
-        definitions
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::InputValueDefinition(definition) => definition,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_input_value_definition(&mut self) -> InputValueDefinition<'a> {
@@ -1064,7 +1138,7 @@ impl<'a> Parser<'a> {
         UnionTypeDefinition { description, name, directives, members, span: self.span_from(start) }
     }
 
-    fn parse_union_type_extension_from(&mut self, start: usize) -> UnionTypeExtension<'a> {
+    fn parse_union_type_extension_from(&mut self, start: u32) -> UnionTypeExtension<'a> {
         self.expect_name_value("union");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("union"));
         let directives = self.parse_directives(Constness::Const);
@@ -1116,7 +1190,7 @@ impl<'a> Parser<'a> {
         EnumTypeDefinition { description, name, directives, values, span: self.span_from(start) }
     }
 
-    fn parse_enum_type_extension_from(&mut self, start: usize) -> EnumTypeExtension<'a> {
+    fn parse_enum_type_extension_from(&mut self, start: u32) -> EnumTypeExtension<'a> {
         self.expect_name_value("enum");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("enum"));
         let directives = self.parse_directives(Constness::Const);
@@ -1192,7 +1266,7 @@ impl<'a> Parser<'a> {
 
     fn parse_input_object_type_extension_from(
         &mut self,
-        start: usize,
+        start: u32,
     ) -> InputObjectTypeExtension<'a> {
         self.expect_name_value("input");
         let name = self.parse_name().unwrap_or_else(|| self.missing_name("input object"));
@@ -1212,17 +1286,18 @@ impl<'a> Parser<'a> {
         }
 
         self.bump();
-        let mut fields = self.new_vec();
+        let mark = self.scratch_mark();
         self.peek_while(|parser, kind| match kind {
             T!['}'] => {
-                if fields.is_empty() {
+                if parser.scratch.len() == mark {
                     parser.err("expected an Input Value Definition");
                 }
                 parser.bump();
                 ControlFlow::Break(())
             }
             TokenKind::Name | TokenKind::StringValue => {
-                fields.push(parser.parse_input_value_definition());
+                let field = parser.parse_input_value_definition();
+                parser.scratch.push(ScratchNode::InputValueDefinition(field));
                 ControlFlow::Continue(())
             }
             TokenKind::Eof => {
@@ -1234,7 +1309,10 @@ impl<'a> Parser<'a> {
                 ControlFlow::Continue(())
             }
         });
-        fields
+        self.drain_scratch(mark, |node| match node {
+            ScratchNode::InputValueDefinition(field) => field,
+            _ => unreachable!("scratch stack discipline"),
+        })
     }
 
     fn parse_description_if_present(&mut self) -> Option<StringValue<'a>> {
@@ -1246,18 +1324,26 @@ impl<'a> Parser<'a> {
         let raw = token.data();
         let block = raw.starts_with(r#"""""#);
         let value = if block {
-            let value = normalize_block_string(raw);
-            self.allocator.alloc_str(&value)
+            let content = raw
+                .strip_prefix(r#"""""#)
+                .and_then(|value| value.strip_suffix(r#"""""#))
+                .unwrap_or(raw);
+            if content.contains('\r') {
+                self.allocator.alloc_str(&normalize_block_string(raw))
+            } else {
+                // No line endings to normalize: borrow from the source text.
+                content
+            }
         } else {
-            let value = unescape_string(raw.trim_matches('"'));
-            self.allocator.alloc_str(&value)
+            let content = raw.trim_matches('"');
+            if content.contains('\\') {
+                self.allocator.alloc_str(&unescape_string(content))
+            } else {
+                // No escape sequences: borrow from the source text.
+                content
+            }
         };
-        Some(StringValue {
-            raw,
-            value,
-            block,
-            span: Span::new(token.index(), token.index() + token.data().len()),
-        })
+        Some(StringValue { raw, value, block, span: token_span(&token) })
     }
 
     fn parse_name(&mut self) -> Option<Name<'a>> {
@@ -1266,10 +1352,7 @@ impl<'a> Parser<'a> {
             return None;
         }
         let token = self.bump().expect("peeked Name token must be available");
-        Some(Name {
-            value: token.data(),
-            span: Span::new(token.index(), token.index() + token.data().len()),
-        })
+        Some(Name { value: token.data(), span: token_span(&token) })
     }
 
     fn expect_name_value(&mut self, expected: &str) {
@@ -1304,7 +1387,11 @@ impl<'a> Parser<'a> {
     }
 
     fn limit_err<S: Into<String>>(&mut self, message: S) {
-        let index = if let Some(token) = self.peek_token() { token.index() } else { self.last_end };
+        let index = if let Some(token) = self.peek_token() {
+            token.index()
+        } else {
+            self.last_end as usize
+        };
         self.push_err(Error::limit(message, index));
         self.accept_errors = false;
     }
@@ -1375,18 +1462,19 @@ impl<'a> Parser<'a> {
         } else {
             self.next_significant_token()?
         };
-        self.last_end = token.index() + token.data().len();
+        self.last_end = span_index(token.index() + token.data().len());
         Some(token)
     }
 
     fn next_significant_token(&mut self) -> Option<Token<'a>> {
-        for item in &mut self.lexer {
-            match item {
+        // `next_significant` skips whitespace and comma trivia in the cursor;
+        // comments still surface as tokens so their spans can be recorded.
+        loop {
+            match self.lexer.next_significant()? {
                 Ok(token) => match token.kind() {
-                    TokenKind::Whitespace | TokenKind::Comma => {}
                     TokenKind::Comment => {
-                        self.comments
-                            .push(Span::new(token.index(), token.index() + token.data().len()));
+                        let span = token_span(&token);
+                        self.comments.push(span);
                     }
                     _ => return Some(token),
                 },
@@ -1398,22 +1486,36 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        None
     }
 
-    fn current_start(&mut self) -> usize {
-        if let Some(token) = self.peek_token() { token.index() } else { self.last_end }
+    fn current_start(&mut self) -> u32 {
+        if let Some(token) = self.peek_token() { span_index(token.index()) } else { self.last_end }
     }
 
     fn current_span(&mut self) -> Span {
-        self.peek_token()
-            .map(|token| Span::new(token.index(), token.index() + token.data().len()))
-            .unwrap_or_else(|| Span::new(self.last_end, self.last_end))
+        self.peek_token().map(token_span).unwrap_or_else(|| Span::new(self.last_end, self.last_end))
     }
 
-    fn span_from(&self, start: usize) -> Span {
+    fn span_from(&self, start: u32) -> Span {
         Span::new(start, self.last_end.max(start))
     }
+}
+
+/// Converts a byte index to a span offset.
+///
+/// `Parser::new` asserts the source text fits in `u32`, so token indexes are
+/// always in range.
+#[expect(clippy::cast_possible_truncation)]
+#[inline]
+fn span_index(index: usize) -> u32 {
+    debug_assert!(u32::try_from(index).is_ok());
+    index as u32
+}
+
+fn token_span(token: &Token<'_>) -> Span {
+    let start = span_index(token.index());
+    let end = span_index(token.index() + token.data().len());
+    Span::new(start, end)
 }
 
 trait MissingNameContext {

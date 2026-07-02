@@ -3,11 +3,11 @@ use crate::Error;
 /// Byte cursor over GraphQL source text.
 #[derive(Debug, Clone)]
 pub(crate) struct Cursor<'a> {
-    index: usize,
+    pub(super) index: usize,
     pub(super) offset: usize,
     pub(super) source: &'a str,
-    bytes: &'a [u8],
-    next: usize,
+    pub(super) bytes: &'a [u8],
+    pub(super) next: usize,
     pub(crate) err: Option<Error>,
 }
 
@@ -106,6 +106,38 @@ impl<'a> Cursor<'a> {
         }
 
         false
+    }
+
+    /// Whether the next bytes are a Unicode byte order mark.
+    pub(super) fn at_bom(&self) -> bool {
+        self.bytes[self.next..].starts_with(b"\xEF\xBB\xBF")
+    }
+
+    /// Consumes the remaining bytes of a comment (the `#` is already consumed)
+    /// and returns the end of its text.
+    ///
+    /// Scans to the next line terminator with `memchr` instead of the per-byte
+    /// main lexer loop. Leaves the cursor exactly where the per-byte path
+    /// would: stopped before the terminator (mirroring `prev_str`), or at end
+    /// of input with the EOF-adjacent index preserved for token-limit
+    /// diagnostics (mirroring `current_str`).
+    pub(super) fn seek_line_end(&mut self) -> usize {
+        let end = match memchr::memchr2(b'\n', b'\r', &self.bytes[self.next..]) {
+            Some(found) => {
+                let end = self.next + found;
+                self.index = end;
+                end
+            }
+            None => {
+                let end = self.bytes.len();
+                // `end >= 1` because the leading `#` is already consumed.
+                self.index = end - 1;
+                end
+            }
+        };
+        self.offset = end;
+        self.next = end;
+        end
     }
 
     /// Consumes the remaining bytes of a whitespace run and returns its text.
